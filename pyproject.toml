@@ -1,0 +1,23 @@
+[tool.poetry]
+name = "VarTracer"
+version = "0.1.0"
+description = "A Python tool for tracing and analyzing code execution."
+authors = ["Mengqi Zhang <jiujiuchangshou@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/jiujiucs17/VTracer"
+repository = "https://github.com/jiujiucs17/VTracer"
+keywords = ["tracing", "debugging", "analysis", "python"]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+datetime = "*"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.0"
+black = "^23.0"
+flake8 = "^6.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
