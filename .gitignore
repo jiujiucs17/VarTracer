@@ -1,0 +1,5 @@
+*.pyc
+__pycache__/
+VarTracer/trace_output/
+VarTracer/data/
+VarTracer/__pycache__/

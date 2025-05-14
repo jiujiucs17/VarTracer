@@ -1,0 +1,15 @@
+MANIFEST.in
+pyproject.toml
+setup.py
+HybVarTracer.egg-info/PKG-INFO
+HybVarTracer.egg-info/SOURCES.txt
+HybVarTracer.egg-info/dependency_links.txt
+HybVarTracer.egg-info/top_level.txt
+VarTracer/ASTParser.py
+VarTracer/Utilities.py
+VarTracer/VarTracer.py
+VarTracer/__init__.py
+VarTracer/test_code/__init__.py
+VarTracer/test_code/playground.py
+VarTracer/test_code/playground_2.py
+VarTracer/test_code/recurse.py

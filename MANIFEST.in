@@ -1,0 +1,5 @@
+global-exclude *.pyc
+global-exclude __pycache__/
+global-exclude VarTracer/trace_output/
+global-exclude VarTracer/data/
+global-exclude VarTracer/__pycache__/

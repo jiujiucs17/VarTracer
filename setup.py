@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='HybVarTracer',          # 包名，需唯一，PyPI 上不能重复
+    name='VarTracer',          # 包名，需唯一，PyPI 上不能重复
     version='0.1.0',                   # 语义化版本号
     author='Mengqi Zhang',
     author_email='jiujiuchangshou@gmail.com',
