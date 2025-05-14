@@ -8,7 +8,7 @@ setup(
     description='A hybrid analysis tool for tracing variable dependencies across python codes',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',  # 告诉 PyPI README 用的是 markdown
-    url='https://github.com/jiujiucs17/VTracer',  # 项目主页，如 GitHub
+    url='https://github.com/jiujiucs17/VarTracer',  # 项目主页，如 GitHub
     packages=find_packages(exclude=["tests*"]),     # 自动发现子包
     classifiers=[                                    # PyPI 分类标准
         'Programming Language :: Python :: 3',

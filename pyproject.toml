@@ -5,8 +5,8 @@ description = "A Python tool for tracing and analyzing code execution."
 authors = ["Mengqi Zhang <jiujiuchangshou@gmail.com>"]
 license = "MIT"
 readme = "README.md"
-homepage = "https://github.com/jiujiucs17/VTracer"
-repository = "https://github.com/jiujiucs17/VTracer"
+homepage = "https://github.com/jiujiucs17/VarTracer"
+repository = "https://github.com/jiujiucs17/VarTracer"
 keywords = ["tracing", "debugging", "analysis", "python"]
 
 [tool.poetry.dependencies]

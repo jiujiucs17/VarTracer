@@ -61,7 +61,6 @@ VarTracer is a Python-based tool designed for dynamic code execution tracing and
 ## Example Output
 JSON format
 
-    ```
     {
         "trace_started_at": "2025-05-13 12:00:00",
         "execution_stack": [
@@ -79,7 +78,6 @@ JSON format
 
 Text format
 
-    ```
     Trace started at 2025-05-13 12:00:00
     CALL → MODULE 'test_code.playground' | FILE '/path/to/playground.py' | FUNC 'main'()
         LINE - MODULE 'test_code.playground' | FILE '/path/to/playground.py' | FUNC 'main'() | LINE 10
