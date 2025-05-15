@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "VarTracer"
-version = "0.1.5"
+version = "0.1.6"
 description = "A Python-based tool for dynamic code execution tracing and dependency analysis."
 readme = "readme.md"
 requires-python = ">=3.7"
