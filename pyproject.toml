@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "VarTracer"
-version = "0.1.1"
+version = "0.1.2"
 description = "A Python tool for tracing and analyzing code execution."
 authors = ["Mengqi Zhang <jiujiuchangshou@gmail.com>"]
 license = "MIT"
