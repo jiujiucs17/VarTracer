@@ -122,6 +122,8 @@ def extension_interface(file_path):
         with open(result_path, 'r') as result_file:
             result_json = json.load(result_file)
         
+        # print the result_json as a string
+        print(json.dumps(result_json, indent=4))
         return result_json
     
     finally:
