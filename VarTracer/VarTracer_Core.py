@@ -11,7 +11,7 @@ from .Utilities import safe_serialize, create_event, FrameSnapshot
 
 
 class VarTracer:
-    def __init__(self, only_project_root=None, clean_stdlib=True, ignore_module_func=False):
+    def __init__(self, only_project_root=None, clean_stdlib=True, ignore_module_func=False, verbose=False):
         
         # Initialize the VTracer instance
         self.raw_logs = []
@@ -22,6 +22,7 @@ class VarTracer:
         self.only_project_root = os.path.abspath(only_project_root) if only_project_root else None
         self.clean_stdlib = clean_stdlib 
         self.ignore_module_funcs = ignore_module_func 
+        self.verbose = verbose
 
         # Initialize the ignored modules 
         self.stdlibs = set(self._expand_module_names(self._get_standard_library_modules()))
@@ -165,7 +166,8 @@ class VarTracer:
 
         # print(f"清理完成：从 {original_count} 条日志中移除 {original_count - cleaned_count} 条标准库记录。")
         # print console log with english
-        print(f"Note that the execution log is cleaned: Removed {original_count - cleaned_count} standard Python library records from {original_count} logs. Initalize VTracer instance using 'VTracer(clean_stdlib=False)' to disable this feature.")
+        if self.verbose:
+            print(f"Note that the execution log is cleaned: Removed {original_count - cleaned_count} standard Python library records from {original_count} logs. Initalize VTracer instance using 'VTracer(clean_stdlib=False)' to disable this feature.")
 
     def _analyze_dependencies(self, line_content, local_vars, global_vars):
         """
@@ -216,9 +218,11 @@ class VarTracer:
                 f.write(output)
             # print(f"追踪结果已保存到 {path}")
             # print console log with english
-            print(f"Raw trace result saved to '{path}'")
+            if self.verbose:
+                print(f"Raw trace result saved to '{path}'")
         else:
-            print(output)
+            if self.verbose:
+                print(output)
 
         return output
     
@@ -284,7 +288,8 @@ class VarTracer:
             output_file = os.path.join(output_path, output_name)
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(output)
-            print(f"Txt execution stack saved to '{output_file}'")
+            if self.verbose:
+                print(f"Txt execution stack saved to '{output_file}'")
 
         return output
     
@@ -392,18 +397,20 @@ class VarTracer:
                 json.dump(output_data, f, indent=4)
             # print(f"JSON 堆栈已保存到 {output_file}")
             # print console log with english
-            print(f"Nested JSON call stack saved to '{output_file}'")
+            if self.verbose:
+                print(f"Nested JSON call stack saved to '{output_file}'")
 
         return output_data
 
 class FileVTracer:
-    def __init__(self, filepath):
+    def __init__(self, filepath, verbose=False):
         """
         Initialize the FileVTracer instance with a file path.
         Checks if the file exists and is a Python file.
         """
         self.filepath = filepath
-        self.vt = VarTracer()
+        self.verbose = verbose
+        self.vt = VarTracer(verbose=self.verbose)
         self.file_content = None
 
         if self._validate_file():
@@ -445,7 +452,8 @@ class FileVTracer:
             # Execute the file content in a controlled environment
             exec(self.file_content, {})
         except Exception as e:
-            print(f"An error occurred during execution: {e}")
+            if self.verbose:
+                print(f"An error occurred during execution: {e}")
         finally:
             # Stop the VTracer
             self.vt.stop()

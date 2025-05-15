@@ -1,4 +1,8 @@
 import inspect
+import os
+import shutil
+import subprocess
+import json
 
 def safe_serialize(obj):
         """将对象转换为字符串表示"""
@@ -49,5 +53,76 @@ class FrameSnapshot:
         }
 
     def __repr__(self):
+
         """Return a string representation of the FrameSnapshot."""
         return f"<FrameSnapshot {self.function_name} at {self.file_name}:{self.line_no}>"
+    
+def extension_interface(file_path):
+    """
+    Modify a Python file to use VarTracer for dependency analysis, execute it, and restore the file.
+    
+    Args:
+        file_path (str): Path to the Python file to be analyzed.
+    
+    Returns:
+        dict: A dictionary containing the execution stack and dependency information.
+    
+    Raises:
+        ValueError: If the file is not a .py file.
+        FileNotFoundError: If the file does not exist.
+    """
+    # Check if the file exists and is a .py file
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"The file {file_path} does not exist.")
+    if not file_path.endswith('.py'):
+        raise ValueError("The provided file is not a Python (.py) file.")
+    
+    # Backup the original file
+    backup_path = file_path + ".bak"
+    shutil.copy(file_path, backup_path)
+    
+    try:
+        # Read the original file content
+        with open(file_path, 'r') as f:
+            original_content = f.readlines()
+        
+        # Add VarTracer imports and initialization at the top
+        modified_content = ["from VarTracer import *\n", "import json\n", "vt = VarTracer()\n", "vt.start()\n"] + original_content
+        
+        # Add dependency analysis code at the end
+        modified_content += [
+            "\n",
+            "exec_stack_json = vt.exec_stack_json()\n",
+            "dep_tree = DependencyTree(call_stack=json.dumps(exec_stack_json))\n",
+            "dep_dic = dep_tree.parse_dependency()\n",
+            "\n",
+            "result_json = {\n",
+            "    'exec_stack': exec_stack_json,\n",
+            "    'dependency': dep_dic\n",
+            "}\n",
+            "\n",
+            "with open('result.json', 'w') as result_file:\n",
+            "    json.dump(result_json, result_file)\n"
+        ]
+        
+        # Write the modified content back to the file
+        with open(file_path, 'w') as f:
+            f.writelines(modified_content)
+        
+        # Execute the modified file in the current Python environment
+        subprocess.run(['python3', file_path], check=True)
+        
+        # Read the result from the generated JSON file
+        with open('result.json', 'r') as result_file:
+            result_json = json.load(result_file)
+        
+        # 将result_json 以字符串的形式打印
+        print(result_json)
+        return result_json
+    
+    finally:
+        # Restore the original file
+        shutil.move(backup_path, file_path)
+        # Clean up the temporary result file
+        if os.path.exists('result.json'):
+            os.remove('result.json')
