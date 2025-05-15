@@ -1,0 +1,16 @@
+MANIFEST.in
+pyproject.toml
+readme.md
+setup.py
+VarTracer/ASTParser.py
+VarTracer/Utilities.py
+VarTracer/VarTracer_Core.py
+VarTracer/__init__.py
+VarTracer.egg-info/PKG-INFO
+VarTracer.egg-info/SOURCES.txt
+VarTracer.egg-info/dependency_links.txt
+VarTracer.egg-info/top_level.txt
+VarTracer/test_code/__init__.py
+VarTracer/test_code/playground.py
+VarTracer/test_code/playground_2.py
+VarTracer/test_code/recurse.py

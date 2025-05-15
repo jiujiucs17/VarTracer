@@ -1,0 +1,108 @@
+Metadata-Version: 2.4
+Name: VarTracer
+Version: 0.1.0
+Summary: A Python-based tool for dynamic code execution tracing and dependency analysis.
+Home-page: https://github.com/jiujiucs17/VarTracer
+Author: Mengqi Zhang
+Author-email: Mengqi Zhang <jiujiuchangshou@gmail.com>
+License: MIT
+Project-URL: Homepage, https://github.com/jiujiucs17/VarTracer
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.7
+Description-Content-Type: text/markdown
+Dynamic: author
+Dynamic: home-page
+Dynamic: requires-python
+
+# VarTracer
+
+VarTracer is a Python-based tool designed for dynamic code execution tracing and dependency analysis. It helps developers understand the execution flow, variable dependencies, and function call stacks in their code.
+
+## Features
+
+- **Dynamic Tracing**: Tracks code execution using `sys.settrace`.
+- **Dependency Analysis**: Analyzes variable dependencies and assignments using an AST-based parser.
+- **Execution Stack Export**:
+  - JSON format (`VTrace_exec_stack.json`)
+  - Text format (`VTrace_exec_stack.txt`)
+  - Raw trace output (`VTrace_raw_output.txt`)
+- **Module Filtering**: Supports filtering of standard library and custom modules.
+- **Recursive Call Analysis**: Handles nested function calls and dependencies.
+
+## File Structure
+
+- `VarTracer.py`: Core implementation of the tracing functionality.
+- `ASTParser.py`: Dependency analysis using Python's `ast` module.
+- `Utilities.py`: Helper functions for the tool.
+- `test_code/`: Sample test scripts.
+- `trace_output/`: Directory for trace output files.
+
+## Quick Start
+
+1. **Run the Example**:
+   Modify and execute the following code in `VarTracer.py`:
+   ```python
+   if __name__ == "__main__":
+       from pathlib import Path
+       output_dir = os.path.join(Path(__file__).resolve().parent, "trace_output")
+       
+       vt = VarTracer(clean_stdlib=True)
+       vt.start()
+
+       from test_code import playground_2 as pg2
+       pg2.main()
+
+       vt.stop()
+       vt.raw_result(output_dir=output_dir)
+       vt.exec_stack_txt(output_path=output_dir)
+       vt.exec_stack_json(output_path=output_dir)
+
+2. **View Results**:
+    - `trace_output/VTrace_exec_stack.json`: Nested JSON execution stack.
+    - `trace_output/VTrace_exec_stack.txt`: Human-readable execution stack.
+    - `trace_output/VTrace_raw_output.txt`: Raw trace output.
+
+## Core Classes and Methods
+1. **VarTracer**
+    - start(): Start tracing.
+    - stop(): Stop tracing.
+    - raw_result(output_dir): Export raw trace results.
+    - exec_stack_txt(output_path, output_name): Export execution stack in text format.
+    - exec_stack_json(output_path, output_name): Export execution stack in JSON format.
+
+2. **ASTParser**
+    - LineDependencyAnalyzer: Analyzes dependencies and assignments in a single line of code.
+    - DependencyTree: Parses the call stack to extract variable dependencies.
+
+## Example Output
+JSON format
+
+    {
+        "trace_started_at": "2025-05-13 12:00:00",
+        "execution_stack": [
+            {
+                "module": "test_code.playground",
+                "file_path": "/path/to/playground.py",
+                "func": "main",
+                "line_no": 10,
+                "line_content": "x = y + z",
+                "dependencies": ["y", "z"],
+                "assigned_vars": ["x"]
+            }
+        ]
+    }
+
+Text format
+
+    Trace started at 2025-05-13 12:00:00
+    CALL → MODULE 'test_code.playground' | FILE '/path/to/playground.py' | FUNC 'main'()
+        LINE - MODULE 'test_code.playground' | FILE '/path/to/playground.py' | FUNC 'main'() | LINE 10
+            x = y + z
+            dependencies: ['y', 'z']
+            assigned_vars: ['x']
+    RETURN ← MODULE 'test_code.playground' | FILE '/path/to/playground.py' | FUNC 'main'()
+
+## License
+VarTracer is licensed under the MIT License.
