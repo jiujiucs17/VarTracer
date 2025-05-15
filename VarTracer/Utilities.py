@@ -77,8 +77,14 @@ def extension_interface(file_path):
     if not file_path.endswith('.py'):
         raise ValueError("The provided file is not a Python (.py) file.")
     
+    # Get the directory of the target file
+    file_dir = os.path.dirname(file_path)
+    
+    # Define paths for the backup file and result file in the same directory
+    backup_path = os.path.join(file_dir, os.path.basename(file_path) + ".bak")
+    result_path = os.path.join(file_dir, "result.json")
+    
     # Backup the original file
-    backup_path = file_path + ".bak"
     shutil.copy(file_path, backup_path)
     
     try:
@@ -101,7 +107,7 @@ def extension_interface(file_path):
             "    'dependency': dep_dic\n",
             "}\n",
             "\n",
-            "with open('result.json', 'w') as result_file:\n",
+            f"with open(r'{result_path}', 'w') as result_file:\n",
             "    json.dump(result_json, result_file)\n"
         ]
         
@@ -113,16 +119,14 @@ def extension_interface(file_path):
         subprocess.run(['python3', file_path], check=True)
         
         # Read the result from the generated JSON file
-        with open('result.json', 'r') as result_file:
+        with open(result_path, 'r') as result_file:
             result_json = json.load(result_file)
         
-        # 将result_json 以字符串的形式打印
-        print(result_json)
         return result_json
     
     finally:
         # Restore the original file
         shutil.move(backup_path, file_path)
         # Clean up the temporary result file
-        if os.path.exists('result.json'):
-            os.remove('result.json')
+        if os.path.exists(result_path):
+            os.remove(result_path)
