@@ -99,54 +99,58 @@ class DependencyTree:
 
         Returns:
             dict: A dictionary where keys are file paths and values are dictionaries
-                mapping variable names to their dependencies.
+                mapping variable names to their dependencies in the specified format.
         """
         dependencies_by_file = {}
         call_stack_items = self.call_stack.get("execution_stack", [])
 
-        def _traverse_stack(stack, file_path, dependencies_by_file):
-            """
-            Recursively traverse the call stack and collect dependencies.
-
-            Args:
-                stack (list): The stack to traverse.
-                file_path (str): The file path to match.
-                dependencies_by_file (dict): The dictionary to update with dependencies.
-            """
+        def _traverse_stack(stack, file_path, var_info):
             for item in stack:
                 details = item.get("details", {})
                 line_no = details.get("line_no", None)
                 if details.get("file_path") == file_path:
-                    # Extract assigned variables and dependencies
                     assigned_vars = details.get("assigned_vars", [])
                     dependencies = details.get("dependencies", [])
+                    errors = details.get("errors", {}) if "errors" in details else {}
+
                     for var in assigned_vars:
-
+                        # 初始化变量信息
+                        if var not in var_info:
+                            var_info[var] = {
+                                "variableName": var,
+                                "lineNumber": line_no,
+                                "results": {} if not errors.get(var) else errors[var]
+                            }
+                        # 错误处理
+                        if errors.get(var):
+                            var_info[var]["results"] = errors[var]
+                            continue
+                        # 依赖处理
                         for dep in dependencies:
-                            # 如果变量已经存在于字典中，更新它的依赖
-                            # print(f"var: {var}, dep: {dep}, line_no: {line_no}")
-                            
-                            if var in dependencies_by_file[file_path]:
-                                # 如果变量已有这个依赖，但在新的行号处产生了新的依赖，将新的依赖添加到值的列表中
-                                if dep in dependencies_by_file[file_path][var] and line_no not in dependencies_by_file[file_path][var][dep]:
-                                        dependencies_by_file[file_path][var][dep].append(line_no)
-                                else:
-                                    dependencies_by_file[file_path][var][dep] = [line_no]     
-                            # 否则，添加新的依赖
+                            if isinstance(var_info[var]["results"], str):
+                                continue
+                            if dep not in var_info[var]["results"]:
+                                var_info[var]["results"][dep] = {
+                                    "first_occurrence": line_no,
+                                    "co_occurrences": [line_no]
+                                }
                             else:
-                                dependencies_by_file[file_path][var] = {dep: [line_no]}
-
-                # Recursively traverse nested daughter_stack if present
+                                if line_no not in var_info[var]["results"][dep]["co_occurrences"]:
+                                    var_info[var]["results"][dep]["co_occurrences"].append(line_no)
+                # 递归遍历 daughter_stack
                 if "daughter_stack" in details:
-                    _traverse_stack(details["daughter_stack"], file_path, dependencies_by_file)
+                    _traverse_stack(details["daughter_stack"], file_path, var_info)
 
-        # Iterate over each file in self.files
         for file_path in self.files:
-            dependencies_by_file[file_path] = {}
-            # Start recursive traversal of the call stack
-            _traverse_stack(call_stack_items, file_path, dependencies_by_file)
+            var_info = {}
+            _traverse_stack(call_stack_items, file_path, var_info)
+            # 对每个依赖的 co_occurrences 排序，去重
+            for var in var_info:
+                results = var_info[var]["results"]
+                if isinstance(results, dict):
+                    for dep in results:
+                        results[dep]["co_occurrences"] = sorted(list(set(results[dep]["co_occurrences"])))
+            dependencies_by_file[file_path] = var_info
 
         self.dependency_by_file = dependencies_by_file
         return dependencies_by_file
-
-    

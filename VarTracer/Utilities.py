@@ -57,7 +57,7 @@ class FrameSnapshot:
         """Return a string representation of the FrameSnapshot."""
         return f"<FrameSnapshot {self.function_name} at {self.file_name}:{self.line_no}>"
     
-def extension_interface(file_path):
+def extension_interface(file_path, print=False):
     """
     Modify a Python file to use VarTracer for dependency analysis, execute it, and restore the file.
     
@@ -123,7 +123,8 @@ def extension_interface(file_path):
             result_json = json.load(result_file)
         
         # print the result_json as a string
-        print(json.dumps(result_json, indent=4))
+        if print:
+            print(json.dumps(result_json, indent=4))
         return result_json
     
     finally:
