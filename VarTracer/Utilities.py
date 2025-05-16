@@ -133,72 +133,72 @@ def extension_interface(file_path):
         if os.path.exists(result_path):
             os.remove(result_path)
 
-def human_interface(file_path):
-    """
-    Modify a Python file to use VarTracer for execution stack tracing (text format), execute it, and restore the file.
+# def human_interface(file_path):
+#     """
+#     Modify a Python file to use VarTracer for execution stack tracing (text format), execute it, and restore the file.
 
-    Args:
-        file_path (str): Path to the Python file to be analyzed.
+#     Args:
+#         file_path (str): Path to the Python file to be analyzed.
 
-    Returns:
-        str: The execution stack in text format.
+#     Returns:
+#         str: The execution stack in text format.
 
-    Raises:
-        ValueError: If the file is not a .py file.
-        FileNotFoundError: If the file does not exist.
-    """
-    # Check if the file exists and is a .py file
-    if not os.path.isfile(file_path):
-        raise FileNotFoundError(f"The file {file_path} does not exist.")
-    if not file_path.endswith('.py'):
-        raise ValueError("The provided file is not a Python (.py) file.")
+#     Raises:
+#         ValueError: If the file is not a .py file.
+#         FileNotFoundError: If the file does not exist.
+#     """
+#     # Check if the file exists and is a .py file
+#     if not os.path.isfile(file_path):
+#         raise FileNotFoundError(f"The file {file_path} does not exist.")
+#     if not file_path.endswith('.py'):
+#         raise ValueError("The provided file is not a Python (.py) file.")
 
-    # Get the directory of the target file
-    file_dir = os.path.dirname(file_path)
+#     # Get the directory of the target file
+#     file_dir = os.path.dirname(file_path)
 
-    # Define paths for the backup file and result file in the same directory
-    backup_path = os.path.join(file_dir, os.path.basename(file_path) + ".bak")
-    result_path = os.path.join(file_dir, "exec_stack.txt")
+#     # Define paths for the backup file and result file in the same directory
+#     backup_path = os.path.join(file_dir, os.path.basename(file_path) + ".bak")
+#     result_path = os.path.join(file_dir, "exec_stack.txt")
 
-    # Backup the original file
-    shutil.copy(file_path, backup_path)
+#     # Backup the original file
+#     shutil.copy(file_path, backup_path)
 
-    try:
-        # Read the original file content
-        with open(file_path, 'r') as f:
-            original_content = f.readlines()
+#     try:
+#         # Read the original file content
+#         with open(file_path, 'r') as f:
+#             original_content = f.readlines()
 
-        # Add VarTracer imports and initialization at the top
-        modified_content = [
-            "from VarTracer import *\n",
-            "vt = VarTracer()\n",
-            "vt.start()\n"
-        ] + original_content
+#         # Add VarTracer imports and initialization at the top
+#         modified_content = [
+#             "from VarTracer import *\n",
+#             "vt = VarTracer()\n",
+#             "vt.start()\n"
+#         ] + original_content
 
-        # Add code at the end to output the execution stack in text format
-        modified_content += [
-            "\n",
-            f"exec_stack_txt = vt.exec_stack_txt(output_path=r'{file_dir}', output_name='exec_stack.txt')\n"
-        ]
+#         # Add code at the end to output the execution stack in text format
+#         modified_content += [
+#             "\n",
+#             f"exec_stack_txt = vt.exec_stack_txt(output_path=r'{file_dir}', output_name='exec_stack.txt')\n"
+#         ]
 
-        # Write the modified content back to the file
-        with open(file_path, 'w') as f:
-            f.writelines(modified_content)
+#         # Write the modified content back to the file
+#         with open(file_path, 'w') as f:
+#             f.writelines(modified_content)
 
-        # Execute the modified file in the current Python environment
-        subprocess.run(['python3', file_path], check=True)
+#         # Execute the modified file in the current Python environment
+#         subprocess.run(['python3', file_path], check=True)
 
-        # Read the result from the generated text file
-        with open(result_path, 'r') as result_file:
-            exec_stack_txt = result_file.read()
+#         # Read the result from the generated text file
+#         with open(result_path, 'r') as result_file:
+#             exec_stack_txt = result_file.read()
 
-        # Print the execution stack text
-        print(exec_stack_txt)
-        return exec_stack_txt
+#         # Print the execution stack text
+#         print(exec_stack_txt)
+#         return exec_stack_txt
 
-    finally:
-        # Restore the original file
-        shutil.move(backup_path, file_path)
-        # Clean up the temporary result file
-        if os.path.exists(result_path):
-            os.remove(result_path)
+#     finally:
+#         # Restore the original file
+#         shutil.move(backup_path, file_path)
+#         # Clean up the temporary result file
+#         if os.path.exists(result_path):
+#             os.remove(result_path)
