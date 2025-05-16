@@ -91,59 +91,66 @@ class DependencyTree:
 
         return self.files
     
-
-    
     def parse_dependency(self):
         """
         Parse the dependencies for each file in self.files from self.call_stack.
 
         Returns:
             dict: A dictionary where keys are file paths and values are dictionaries
-                mapping variable names to their dependencies in the specified format.
+                mapping variable names (with scope chain and filename) to their dependencies.
         """
+        import os
+
         dependencies_by_file = {}
         call_stack_items = self.call_stack.get("execution_stack", [])
 
-        def _traverse_stack(stack, file_path, var_info):
+        def _traverse_stack(stack, file_path, var_info, scope_chain):
             for item in stack:
                 details = item.get("details", {})
                 line_no = details.get("line_no", None)
+                func_name = details.get("func", None)
+                file_name = os.path.basename(details.get("file_path", "")) if details.get("file_path") else ""
+                # 构建新的作用域链
+                new_scope_chain = scope_chain.copy()
+                if func_name:
+                    new_scope_chain.append(func_name)
                 if details.get("file_path") == file_path:
                     assigned_vars = details.get("assigned_vars", [])
                     dependencies = details.get("dependencies", [])
                     errors = details.get("errors", {}) if "errors" in details else {}
 
                     for var in assigned_vars:
-                        # 初始化变量信息
-                        if var not in var_info:
-                            var_info[var] = {
-                                "variableName": var,
+                        # 作用域链格式：filename.toplevelscopename.**.parentscopename.varname
+                        scoped_var = ".".join([file_name] + new_scope_chain + [var]) if file_name else ".".join(new_scope_chain + [var])
+                        if scoped_var not in var_info:
+                            var_info[scoped_var] = {
+                                "variableName": scoped_var,
                                 "lineNumber": line_no,
                                 "results": {} if not errors.get(var) else errors[var]
                             }
                         # 错误处理
                         if errors.get(var):
-                            var_info[var]["results"] = errors[var]
+                            var_info[scoped_var]["results"] = errors[var]
                             continue
                         # 依赖处理
                         for dep in dependencies:
-                            if isinstance(var_info[var]["results"], str):
+                            if isinstance(var_info[scoped_var]["results"], str):
                                 continue
-                            if dep not in var_info[var]["results"]:
-                                var_info[var]["results"][dep] = {
+                            if dep not in var_info[scoped_var]["results"]:
+                                var_info[scoped_var]["results"][dep] = {
                                     "first_occurrence": line_no,
                                     "co_occurrences": [line_no]
                                 }
                             else:
-                                if line_no not in var_info[var]["results"][dep]["co_occurrences"]:
-                                    var_info[var]["results"][dep]["co_occurrences"].append(line_no)
+                                if line_no not in var_info[scoped_var]["results"][dep]["co_occurrences"]:
+                                    var_info[scoped_var]["results"][dep]["co_occurrences"].append(line_no)
                 # 递归遍历 daughter_stack
                 if "daughter_stack" in details:
-                    _traverse_stack(details["daughter_stack"], file_path, var_info)
+                    _traverse_stack(details["daughter_stack"], file_path, var_info, new_scope_chain)
 
         for file_path in self.files:
             var_info = {}
-            _traverse_stack(call_stack_items, file_path, var_info)
+            _traverse_stack(call_stack_items, file_path, var_info, [])
             # 对每个依赖的 co_occurrences 排序，去重
             for var in var_info:
                 results = var_info[var]["results"]
