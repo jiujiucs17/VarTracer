@@ -109,7 +109,7 @@ class DependencyTree:
                 details = item.get("details", {})
                 line_no = details.get("line_no", None)
                 func_name = details.get("func", None)
-                file_name = os.path.basename(details.get("file_path", "")) if details.get("file_path") else ""
+                file_name = os.path.splitext(os.path.basename(details.get("file_path", "")))[0] if details.get("file_path") else ""
                 # 构建新的作用域链
                 new_scope_chain = scope_chain.copy()
                 if func_name:
@@ -124,7 +124,7 @@ class DependencyTree:
                         scoped_var = ".".join([file_name] + new_scope_chain + [var]) if file_name else ".".join(new_scope_chain + [var])
                         if scoped_var not in var_info:
                             var_info[scoped_var] = {
-                                "variableName": scoped_var,
+                                "variableName": var,
                                 "lineNumber": line_no,
                                 "results": {} if not errors.get(var) else errors[var]
                             }

@@ -116,7 +116,16 @@ def extension_interface(file_path, print=False):
             f.writelines(modified_content)
         
         # Execute the modified file in the current Python environment
-        subprocess.run(['python3', file_path], check=True)
+        try:
+            std_exe_result = subprocess.run(['python3', file_path], 
+                                            check=True, 
+                                            capture_output=True, 
+                                            text=True)
+        except subprocess.CalledProcessError as e:
+            # print("Subprocess failed!")
+            # print("stdout:", e.stdout)
+            # print("stderr:", e.stderr)
+            raise e
         
         # Read the result from the generated JSON file
         with open(result_path, 'r') as result_file:
