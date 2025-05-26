@@ -108,6 +108,7 @@ class DependencyTree:
             for item in stack:
                 details = item.get("details", {})
                 line_no = details.get("line_no", None)
+                # if line_no == 0: line_no = 1  # 确保行号从1开始，以避免在后续使用 vscode extension 处理行号时遇到 0 行号为非法值的问题
                 func_name = details.get("func", None)
                 file_name = os.path.splitext(os.path.basename(details.get("file_path", "")))[0] if details.get("file_path") else ""
                 # 构建新的作用域链
@@ -157,6 +158,14 @@ class DependencyTree:
                 if isinstance(results, dict):
                     for dep in results:
                         results[dep]["co_occurrences"] = sorted(list(set(results[dep]["co_occurrences"])))
+            # 第二步：修正 first_occurrence
+            for var in var_info:
+                results = var_info[var]["results"]
+                if isinstance(results, dict):
+                    for dep in results:
+                        # dep 变量的 lineNumber
+                        if dep in var_info and "lineNumber" in var_info[dep]:
+                            results[dep]["first_occurrence"] = var_info[dep]["lineNumber"]
             dependencies_by_file[file_path] = var_info
 
         self.dependency_by_file = dependencies_by_file

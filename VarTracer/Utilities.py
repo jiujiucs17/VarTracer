@@ -127,10 +127,31 @@ def extension_interface(file_path, print=False):
             # print("stderr:", e.stderr)
             raise e
         
-        # Read the result from the generated JSON file
         with open(result_path, 'r') as result_file:
             result_json = json.load(result_file)
-        
+
+        # 修正 dependency 中 file_path 指向脚本的变量行号
+        def fix_line_numbers(dependency, target_path):
+            if target_path in dependency:
+                for var, info in dependency[target_path].items():
+                    # 修正主变量的行号
+                    if "lineNumber" in info and info["lineNumber"].isdigit():
+                        info["lineNumber"] = str(int(info["lineNumber"]) - 4)
+                    # 修正 results 里的 first_occurrence 和 co_occurrences
+                    if "results" in info and isinstance(info["results"], dict):
+                        for res in info["results"].values():
+                            if "first_occurrence" in res and res["first_occurrence"].isdigit():
+                                res["first_occurrence"] = str(int(res["first_occurrence"]) - 4)
+                            if "co_occurrences" in res and isinstance(res["co_occurrences"], list):
+                                res["co_occurrences"] = [
+                                    str(int(x) - 4) if x.isdigit() else x for x in res["co_occurrences"]
+                                ]
+
+        # 只修正 file_path 指向的脚本
+        target_path = file_path
+        if "dependency" in result_json:
+            fix_line_numbers(result_json["dependency"], target_path)
+
         # print the result_json as a string
         if print:
             print(json.dumps(result_json, indent=4))
