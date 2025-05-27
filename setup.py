@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="VarTracer",
-    version="0.1.19",
+    version="0.1.21",
     description="A Python-based tool for dynamic code execution tracing and dependency analysis.",
     long_description=open("readme.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
