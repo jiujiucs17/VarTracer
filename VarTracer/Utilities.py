@@ -147,10 +147,71 @@ def extension_interface(file_path, print=False):
                                     str(int(x) - 4) if x.isdigit() else x for x in res["co_occurrences"]
                                 ]
 
+        # 修正 execution_stack 中 file_path 指向脚本的行号：对于 execution_stack 中 details.file_path == file_path 的的记录，把 line_no 减去 4
+        # 修正 dependency 中 file_path 指向脚本的变量行号
+        def fix_dependency_line_numbers(dependency, target_path):
+            if target_path in dependency:
+                for var, info in dependency[target_path].items():
+                    # 修正主变量的行号
+                    if "lineNumber" in info and info["lineNumber"].isdigit():
+                        info["lineNumber"] = str(int(info["lineNumber"]) - 4)
+                    # 修正 results 里的 first_occurrence 和 co_occurrences
+                    if "results" in info and isinstance(info["results"], dict):
+                        for res in info["results"].values():
+                            if "first_occurrence" in res and res["first_occurrence"].isdigit():
+                                res["first_occurrence"] = str(int(res["first_occurrence"]) - 4)
+                            if "co_occurrences" in res and isinstance(res["co_occurrences"], list):
+                                res["co_occurrences"] = [
+                                    str(int(x) - 4) if x.isdigit() else x for x in res["co_occurrences"]
+                                ]
+
+        # 修正 execution_stack 中 file_path 指向脚本的行号
+        def fix_stack_line_numbers(execution_stack, target_path):
+            for frame in execution_stack:
+                if frame.get("file_path") == target_path:
+                    if "line_no" in frame and frame["line_no"].isdigit():
+                        frame["line_no"] = str(int(frame["line_no"]) - 4)
+                    # 递归修正子调用栈
+                    if "sub_call_stack" in frame and isinstance(frame["sub_call_stack"], list):
+                        fix_stack_line_numbers(frame["sub_call_stack"], target_path)
+
         # 只修正 file_path 指向的脚本
         target_path = file_path
         if "dependency" in result_json:
-            fix_line_numbers(result_json["dependency"], target_path)
+            fix_dependency_line_numbers(result_json["dependency"], target_path)
+
+        if "execution_stack" in result_json["exec_stack"]:
+            fix_stack_line_numbers(result_json["exec_stack"]["execution_stack"], target_path)
+
+        # === 清理 tracing 代码带来的额外项 ===
+        # 1. 删除 exec_stack.execution_stack 中 details.module 以 VarTracer 开头的项
+        exec_stack = result_json.get("exec_stack", {})
+        if "execution_stack" in exec_stack:
+            filtered_stack = []
+            for frame in exec_stack["execution_stack"]:
+                details = frame.get("details", frame)
+                module = details.get("module") or details.get("module_name")
+                if not (module and str(module).startswith("VarTracer")):
+                    filtered_stack.append(frame)
+            exec_stack["execution_stack"] = filtered_stack
+
+        # 2. 删除 dependency 中 variableName 为 exec_stack_json 的项
+        dependency = result_json.get("dependency", {})
+        for dep_file in list(dependency.keys()):
+            # 删除 variableName 为 exec_stack_json 的项
+            var_items = dependency[dep_file]
+            keys_to_del = [k for k, v in var_items.items() if v.get("variableName") == "exec_stack_json"]
+            for k in keys_to_del:
+                del var_items[k]
+            # 3. 路径以 VarTracer_Code.py 结尾的项需要直接删除
+            if dep_file.endswith("VarTracer_Code.py"):
+                del dependency[dep_file]
+
+        # 3. 删除 dependency 中名称以“VarTracer_Core.py”为结尾的项
+        keys_to_del = [k for k in dependency.keys() if k.endswith("VarTracer_Core.py")]
+        for k in keys_to_del:
+            del dependency[k]
+
 
         # print the result_json as a string
         if print:
