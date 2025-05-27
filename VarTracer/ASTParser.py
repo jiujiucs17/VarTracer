@@ -164,8 +164,15 @@ class DependencyTree:
                 if isinstance(results, dict):
                     for dep in results:
                         # dep 变量的 lineNumber
-                        if dep in var_info and "lineNumber" in var_info[dep]:
-                            results[dep]["first_occurrence"] = var_info[dep]["lineNumber"]
+                        # dep 可能是未加作用域链的变量名，需要补全作用域链
+                        dep_scoped = None
+                        for candidate in var_info:
+                            if candidate.endswith(f".{dep}") or candidate == dep:
+                                dep_scoped = candidate
+                                break
+                        if dep_scoped and "lineNumber" in var_info[dep_scoped]:
+                            results[dep]["first_occurrence"] = var_info[dep_scoped]["lineNumber"]
+#
             dependencies_by_file[file_path] = var_info
 
         self.dependency_by_file = dependencies_by_file
