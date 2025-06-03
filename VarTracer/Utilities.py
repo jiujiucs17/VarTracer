@@ -142,14 +142,17 @@ def extension_interface(file_path, print=False):
                                     str(int(x) - 4) if x.isdigit() else x for x in res["co_occurrences"]
                                 ]
 
-        # 修正 execution_stack 中 temp_file_path 指向脚本的行号
+        # 修正 execution_stack 中 temp_file_path 指向脚本的行号，以及删除最后一个行的 VarTracer 相关信息，即代码内容为“exec_stack_json = vt.exec_stack_json()”的元素
         def fix_stack_line_numbers(execution_stack, target_path):
             for frame in execution_stack:
-                if frame.get("file_path") == target_path:
-                    if "line_no" in frame and frame["line_no"].isdigit():
-                        frame["line_no"] = str(int(frame["line_no"]) - 4)
-                    if "sub_call_stack" in frame and isinstance(frame["sub_call_stack"], list):
-                        fix_stack_line_numbers(frame["sub_call_stack"], target_path)
+                details = frame.get("details", {})
+                if details.get("file_path") == target_path:
+                    if "line_no" in details and str(details["line_no"]).isdigit():
+                        details["line_no"] = str(int(details["line_no"]) - 4)
+                    if "line_content" in details and str(details["line_content"]).startswith("exec_stack_json = vt.exec_stack_json()"):
+                        execution_stack.remove(frame)
+
+            
 
         target_path = temp_file_path
         if "dependency" in result_json:
