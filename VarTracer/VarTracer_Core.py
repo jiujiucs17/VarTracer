@@ -297,10 +297,11 @@ class VarTracer:
     def exec_stack_json(self, output_path=None, output_name="VTrace_exec_stack.json"):
         """
         根据 raw_logs 生成 JSON 格式的执行堆栈，所有数据均保存为字符串。
+        每个事件的 details 中都包含 depth 字段，表示调用深度（最浅为 0）。
         """
 
-        def process_scope(logs):
-            """递归处理作用域，生成嵌套的 JSON 堆栈"""
+        def process_scope(logs, depth=0):
+            """递归处理作用域，生成嵌套的 JSON 堆栈，并记录调用深度"""
             stack = []
             while logs:
                 record = logs.pop(0)
@@ -314,27 +315,23 @@ class VarTracer:
                 module = self._get_module_name(frame)
                 line_content = linecache.getline(filename, lineno).strip()
 
-                # display_filename = filename if not shorten_path else self._shorten_path(filename)
-
                 # 构造基础信息
                 base_info = {
                     "module": safe_serialize(module),
                     "file_path": safe_serialize(filename),
                     "func": safe_serialize(funcname),
+                    "depth": depth  # 新增 depth 字段
                 }
 
                 if event == 'call':
-                    # CALL 事件，进入新作用域
                     call_event = create_event("CALL", base_info)
-                    call_event["details"]["daughter_stack"] = process_scope(logs)
+                    call_event["details"]["daughter_stack"] = process_scope(logs, depth=depth+1)
                     stack.append(call_event)
                 elif event == 'return':
-                    # RETURN 事件，退出当前作用域
                     return_event = create_event("RETURN", base_info)
                     stack.append(return_event)
                     break
                 elif event == 'line':
-                    # LINE 事件，分析依赖关系
                     analysis_result = self._analyze_dependencies(line_content, frame.locals, frame.globals)
                     dependencies = analysis_result.get("dependencies", set())
                     assigned_vars = analysis_result.get("assigned_vars", set())
@@ -353,7 +350,6 @@ class VarTracer:
                     )
                     stack.append(line_event)
                 elif event == 'exception':
-                    # EXCEPTION 事件
                     exc_type, exc_value, _ = arg
                     exception_event = create_event(
                         "EXCEPTION",
@@ -366,9 +362,7 @@ class VarTracer:
                         },
                     )
                     stack.append(exception_event)
-
                 else:
-                    # 其他事件类型，仅保存事件类型和提示：“this type of event is not supported”
                     unsupported_event = create_event(
                         "UNSUPPORTED",
                         {
@@ -377,13 +371,13 @@ class VarTracer:
                             "VTrace message": "This type of event is not supported.",
                         },
                     )
-                    
+                    stack.append(unsupported_event)
 
             return stack
 
         # 开始处理 raw_logs
         logs_copy = self.raw_logs.copy()
-        result = process_scope(logs_copy)
+        result = process_scope(logs_copy, depth=0)
 
         # 添加时间戳
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -395,8 +389,6 @@ class VarTracer:
             output_file = os.path.join(output_path, output_name)
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(output_data, f, indent=4)
-            # print(f"JSON 堆栈已保存到 {output_file}")
-            # print console log with english
             if self.verbose:
                 print(f"Nested JSON call stack saved to '{output_file}'")
 
