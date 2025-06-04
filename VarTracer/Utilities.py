@@ -90,26 +90,52 @@ def extension_interface(file_path, print=False):
         with open(file_path, 'r') as f:
             original_content = f.readlines()
 
-        # 插桩内容
-        modified_content = [
+        # === 重要说明 ===
+        # 假设：被读取的原始文件中的所有 import 语句都在文件开头，且没有穿插主代码。
+        # 这样做的原因是：sys.settrace 必须在所有 import 语句之后调用，否则会递归追踪 importlib 导致爆栈。
+        # 因此，我们扫描原始文件的前若干行，将所有以 'import ' 或 'from ' 开头的行视为 import 语句，
+        # 并把与 VarTracer 相关的插桩代码插入到这些 import 语句之后、主代码之前。
+        # 这样可以最大程度保证追踪主代码和第三方库调用，但不会递归追踪 import 过程。
+
+        # 找到 import 语句的结束行号
+        import_end = 0
+        for idx, line in enumerate(original_content):
+            striped = line.lstrip()
+            if striped.startswith('import ') or striped.startswith('from '):
+                import_end = idx + 1
+            elif striped == '' or striped.startswith('#'):
+                continue  # 跳过空行和注释
+            else:
+                break  # 第一个非 import/空行/注释的地方停止
+
+        # 构造插桩内容
+        vartracer_instrument = [
             "from VarTracer import *\n",
             "import json\n",
             "vt = VarTracer()\n",
             "vt.start()\n"
-        ] + original_content + [
-            "\n",
-            "exec_stack_json = vt.exec_stack_json()\n",
-            "dep_tree = DependencyTree(call_stack=json.dumps(exec_stack_json))\n",
-            "dep_dic = dep_tree.parse_dependency()\n",
-            "\n",
-            "result_json = {\n",
-            "    'exec_stack': exec_stack_json,\n",
-            "    'dependency': dep_dic\n",
-            "}\n",
-            "\n",
-            f"with open(r'{result_path}', 'w') as result_file:\n",
-            "    json.dump(result_json, result_file)\n"
         ]
+        # 插入到所有 import 语句之后
+        modified_content = (
+            original_content[:import_end] +
+            vartracer_instrument +
+            original_content[import_end:] +
+            [
+                "\n",
+                "vt.stop()\n",
+                "exec_stack_json = vt.exec_stack_json()\n",
+                "dep_tree = DependencyTree(call_stack=json.dumps(exec_stack_json))\n",
+                "dep_dic = dep_tree.parse_dependency()\n",
+                "\n",
+                "result_json = {\n",
+                "    'exec_stack': exec_stack_json,\n",
+                "    'dependency': dep_dic\n",
+                "}\n",
+                "\n",
+                f"with open(r'{result_path}', 'w') as result_file:\n",
+                "    json.dump(result_json, result_file)\n"
+            ]
+        )
 
         # 写入临时文件
         with open(temp_file_path, 'w') as f:
@@ -193,7 +219,8 @@ def extension_interface(file_path, print=False):
 
     finally:
         # 删除临时文件和结果文件
-        if os.path.exists(result_path):
-            os.remove(result_path)
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
+        # if os.path.exists(result_path):
+        #     os.remove(result_path)
+        # if os.path.exists(temp_file_path):
+        #     os.remove(temp_file_path)
+        pass

@@ -4,6 +4,7 @@ import linecache
 import sysconfig
 import pkgutil
 import json
+import tqdm
 from datetime import datetime
 
 from .ASTParser import LineDependencyAnalyzer, DependencyTree
@@ -294,13 +295,13 @@ class VarTracer:
         return output
     
 
-    def exec_stack_json(self, output_path=None, output_name="VTrace_exec_stack.json"):
+    def exec_stack_json(self, output_path=None, output_name="VTrace_exec_stack.json", show_progress=False):
         """
         根据 raw_logs 生成 JSON 格式的执行堆栈，所有数据均保存为字符串。
         每个事件的 details 中都包含 depth 字段，表示调用深度（最浅为 0）。
         """
 
-        def process_scope(logs, depth=0):
+        def process_scope(logs, depth=0, pbar=None):
             """递归处理作用域，生成嵌套的 JSON 堆栈，并记录调用深度"""
             stack = []
             while logs:
@@ -308,6 +309,9 @@ class VarTracer:
                 frame = record['frame']
                 event = record['event']
                 arg = record['arg']
+
+                if pbar:
+                    pbar.update(1)
 
                 filename = os.path.abspath(frame.file_name)
                 lineno = frame.line_no
@@ -325,7 +329,7 @@ class VarTracer:
 
                 if event == 'call':
                     call_event = create_event("CALL", base_info)
-                    call_event["details"]["daughter_stack"] = process_scope(logs, depth=depth+1)
+                    call_event["details"]["daughter_stack"] = process_scope(logs, depth=depth+1, pbar=pbar)
                     stack.append(call_event)
                 elif event == 'return':
                     return_event = create_event("RETURN", base_info)
@@ -342,8 +346,8 @@ class VarTracer:
                             **base_info,
                             "line_no": safe_serialize(lineno),
                             "line_content": safe_serialize(line_content),
-                            "locals": {k: safe_serialize(v) for k, v in frame.locals.items()},
-                            "globals": {k: safe_serialize(v) for k, v in frame.globals.items()},
+                            # "locals": {k: safe_serialize(v) for k, v in frame.locals.items()},
+                            # "globals": {k: safe_serialize(v) for k, v in frame.globals.items()},
                             "dependencies": [safe_serialize(dep) for dep in dependencies],
                             "assigned_vars": [safe_serialize(var) for var in assigned_vars],
                         },
@@ -372,12 +376,14 @@ class VarTracer:
                         },
                     )
                     stack.append(unsupported_event)
-
             return stack
 
         # 开始处理 raw_logs
         logs_copy = self.raw_logs.copy()
-        result = process_scope(logs_copy, depth=0)
+        pbar = tqdm.tqdm(total=len(logs_copy), desc="Processing logs", unit="log") if show_progress else None
+        result = process_scope(logs_copy, depth=0, pbar=pbar if show_progress else None)
+        if pbar:
+            pbar.close()
 
         # 添加时间戳
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

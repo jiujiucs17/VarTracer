@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: VarTracer
-Version: 0.1.26
+Version: 0.1.32
 Summary: A Python-based tool for dynamic code execution tracing and dependency analysis.
 Home-page: https://github.com/jiujiucs17/VarTracer
 Author: Mengqi Zhang
