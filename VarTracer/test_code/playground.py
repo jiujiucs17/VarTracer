@@ -4,6 +4,7 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 import trace 
+from ..VarTracer_Core import VarTracer
 
 # 自动判断是否有 GPU 或 mps 可用
 device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")

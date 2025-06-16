@@ -1,4 +1,3 @@
-from .VarTracer_Core import VarTracer
-from .VarTracer_Core import FileVTracer
-from .ASTParser import DependencyTree
-from .Utilities import extension_interface
+from .VarTracer_Core import *
+from .ASTParser import *
+from .Utilities import *

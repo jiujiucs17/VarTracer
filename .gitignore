@@ -3,3 +3,6 @@ __pycache__/
 VarTracer/trace_output/
 VarTracer/data/
 VarTracer/__pycache__/
+VarTracer_nonpackage/trace_output/
+VarTracer_nonpackage/data/
+VarTracer_nonpackage/__pycache__/

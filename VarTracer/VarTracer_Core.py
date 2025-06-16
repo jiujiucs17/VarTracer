@@ -4,10 +4,11 @@ import linecache
 import sysconfig
 import pkgutil
 import json
+import tqdm
 from datetime import datetime
 
-from .ASTParser import LineDependencyAnalyzer, DependencyTree
-from .Utilities import safe_serialize, create_event, FrameSnapshot
+from ASTParser import LineDependencyAnalyzer, DependencyTree
+from Utilities import *
 
 
 class VarTracer:
@@ -17,6 +18,8 @@ class VarTracer:
         self.raw_logs = []
         self.last_filename = None  
         self.log_trace_progess = True  
+        self.exec_stack = None # save processed execution stack in json format
+        self.dep_tree = None  # save the dependency tree in json format
 
         # Set the parameters
         self.only_project_root = os.path.abspath(only_project_root) if only_project_root else None
@@ -226,81 +229,103 @@ class VarTracer:
 
         return output
     
-    def exec_stack_txt(self, output_path=None, output_name="VTrace_exec_stack.txt", shorten_path=True):
-
-        result_lines = []
-        indent_level = 0
-
-        for record in self.raw_logs:
-            frame = record['frame']  # FrameSnapshot 实例
-            event = record['event']
-            arg = record['arg']
-
-            filename = os.path.abspath(frame.file_name)
-            lineno = frame.line_no
-            funcname = frame.function_name
-            package = self._get_package_name(frame)
-            module = self._get_module_name(frame)
-            line_content = linecache.getline(filename, lineno).strip()
-            indent = '    ' * indent_level
-
-            display_filename = filename if not shorten_path else self._shorten_path(filename)
-            file_info = f"MODULE '{module}' | FILE '{display_filename}' | FUNC '{funcname}'()"
-
-            if event == 'call':
-                result_lines.append(f"{indent}CALL → {file_info}")
-                indent_level += 1
-            elif event == 'return':
-                indent_level = max(indent_level - 1, 0)
-                result_lines.append(f"{indent}RETURN ← {file_info}")
-            elif event == 'line':
-                # 分析依赖关系
-                analysis_result = self._analyze_dependencies(line_content, frame.locals, frame.globals)
-                dependencies = analysis_result.get("dependencies", set())
-                assigned_vars = analysis_result.get("assigned_vars", set())
-
-                result_lines.append(f"{indent}LINE - {file_info} | LINE {lineno}")
-                result_lines.append(f"{indent}       {line_content}")
-                result_lines.append(f"{indent}       locals: { {k: safe_serialize(v) for k, v in frame.locals.items()} }")
-                result_lines.append(f"{indent}       globals: { {k: safe_serialize(v) for k, v in frame.globals.items()} }")
-                result_lines.append(f"{indent}       dependencies: {dependencies}")
-                result_lines.append(f"{indent}       assigned_vars: {assigned_vars}")
-            elif event == 'exception':
-                exc_type, exc_value, _ = arg
-                result_lines.append(f"{indent}EXCEPTION in {file_info}")
-                result_lines.append(f"{indent}       {line_content}")
-                result_lines.append(f"{indent}       type: {exc_type.__name__}, value: {safe_serialize(exc_value)}")
-
-            else:
-                # 其他事件类型，仅保存事件类型和提示：“this type of event is not supported”
-                result_lines.append(f"{indent}UNSUPPORTED EVENT - {file_info}")
-                result_lines.append(f"{indent}       event_type: {event}")
-                result_lines.append(f"{indent}       VTrace message: This type of event is not supported.")
-
-        # Add a timestamp to the output
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        result_lines.insert(0, f"Trace started at {timestamp}")
-
-        output = '\n'.join(result_lines)
-
-        if output_path:
-            os.makedirs(output_path, exist_ok=True)
-            output_file = os.path.join(output_path, output_name)
-            with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(output)
-            if self.verbose:
-                print(f"Txt execution stack saved to '{output_file}'")
-
-        return output
+    def exec_stack_txt(self, output_path, output_name="VTrace_exec_stack.txt", short_path=True):
+        """
+        生成格式清晰、缩进整齐的 txt 版本执行堆栈。output_path 必须提供。
+        优先使用 self.exec_stack，没有则自动生成。
+        file, func, line 字段均小写且各自独占一行。
+        参数 short_path 控制文件路径显示方式。
+        """
+        if output_path is None:
+            raise ValueError("output_path must be provided.")
     
+        # 如果 exec_stack 为空，先生成
+        if self.exec_stack is None:
+            self.exec_stack_json(output_path=None, show_progress=False)
+    
+        exec_stack = self.exec_stack.get("execution_stack", [])
+        timestamp = self.exec_stack.get("trace_started_at", "")
+    
+        result_lines = []
+        result_lines.append(f"Trace started at {timestamp}")
+    
+        def shorten_path(path):
+            path = os.path.abspath(path)
+            parts = path.split(os.sep)
+            if len(parts) <= 4:
+                return path
+            # 例如: /a/b/.../y/z/filename.py
+            return os.sep.join([parts[0], parts[1], '...', parts[-2], parts[-1]])
+    
+        def format_event(event, indent_level=0):
+            indent = "    " * indent_level
+            lines = []
+            event_type = event.get("type", "")
+            event_type = event_type.upper()
+            details = event.get("details", {})
+    
+            # 文件路径处理
+            file_path = details.get('file_path', '')
+            if short_path and file_path:
+                file_path_disp = shorten_path(file_path)
+            else:
+                file_path_disp = file_path
 
-    def exec_stack_json(self, output_path=None, output_name="VTrace_exec_stack.json"):
+
+            lines.append(f"{indent}{indent_level}--------------------------------------------------")
+            if event_type == "CALL":
+                lines.append(f"{indent}|CALL - '{details.get('module', '(unknown-module)')}'")
+                lines.append(f"{indent}|       file: {file_path_disp}")
+                lines.append(f"{indent}|       func: {details.get('func')}")
+                daughter_stack = details.get("daughter_stack", [])
+                for sub_event in daughter_stack:
+                    lines.extend(format_event(sub_event, indent_level + 1))
+            elif event_type == "RETURN":
+                lines.append(f"{indent}|RETURN - '{details.get('module', '(unknown-module)')}'")
+                lines.append(f"{indent}|       file: {file_path_disp}")
+                lines.append(f"{indent}|       func: {details.get('func')}")
+            elif event_type == "LINE":
+                lines.append(f"{indent}|LINE - '{details.get('module', '(unknown-module)')}'")
+                lines.append(f"{indent}|       line: {details.get('line_no')}")
+                lines.append(f"{indent}|       file: {file_path_disp}")
+                lines.append(f"{indent}|       func: {details.get('func')}")
+                lines.append(f"{indent}|       content: {details.get('line_content')}")
+            elif event_type == "EXCEPTION":
+                lines.append(f"{indent}|EXCEPTION - '{details.get('module', '(unknown-module)')}'")
+                lines.append(f"{indent}|       file: {file_path_disp}")
+                lines.append(f"{indent}|       func: {details.get('func')}")
+                lines.append(f"{indent}|       line: {details.get('line_no')}")
+                lines.append(f"{indent}|       {details.get('line_content')}")
+                lines.append(f"{indent}|       type: {details.get('exception_type')}, value: {details.get('exception_value')}")
+            else:
+                lines.append(f"{indent}|UNKNOWN EVENT: {event_type}")
+                lines.append(f"{indent}|       file: {file_path_disp}")
+                lines.append(f"{indent}|       func: {details.get('func')}")
+                lines.append(f"{indent}|       event_type: {event_type}")
+                lines.append(f"{indent}|       VTrace message: {details.get('VTrace message', 'This type of event is not supported.')}")
+            return lines
+    
+        for event in exec_stack:
+            result_lines.extend(format_event(event, indent_level=0))
+    
+        output = '\n'.join(result_lines)
+    
+        os.makedirs(output_path, exist_ok=True)
+        output_file = os.path.join(output_path, output_name)
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(output)
+        if self.verbose:
+            print(f"Txt execution stack saved to '{output_file}'")
+    
+        return output
+
+    def exec_stack_json(self, output_path=None, output_name="VTrace_exec_stack.json", show_progress=False):
         """
         根据 raw_logs 生成 JSON 格式的执行堆栈，所有数据均保存为字符串。
         每个事件的 details 中都包含 depth 字段，表示调用深度（最浅为 0）。
         """
 
-        def process_scope(logs, depth=0):
+        def process_scope(logs, depth=0, pbar=None):
             """递归处理作用域，生成嵌套的 JSON 堆栈，并记录调用深度"""
             stack = []
             while logs:
@@ -308,6 +333,9 @@ class VarTracer:
                 frame = record['frame']
                 event = record['event']
                 arg = record['arg']
+
+                if pbar:
+                    pbar.update(1)
 
                 filename = os.path.abspath(frame.file_name)
                 lineno = frame.line_no
@@ -325,7 +353,7 @@ class VarTracer:
 
                 if event == 'call':
                     call_event = create_event("CALL", base_info)
-                    call_event["details"]["daughter_stack"] = process_scope(logs, depth=depth+1)
+                    call_event["details"]["daughter_stack"] = process_scope(logs, depth=depth+1, pbar=pbar)
                     stack.append(call_event)
                 elif event == 'return':
                     return_event = create_event("RETURN", base_info)
@@ -342,8 +370,8 @@ class VarTracer:
                             **base_info,
                             "line_no": safe_serialize(lineno),
                             "line_content": safe_serialize(line_content),
-                            "locals": {k: safe_serialize(v) for k, v in frame.locals.items()},
-                            "globals": {k: safe_serialize(v) for k, v in frame.globals.items()},
+                            # "locals": {k: safe_serialize(v) for k, v in frame.locals.items()},
+                            # "globals": {k: safe_serialize(v) for k, v in frame.globals.items()},
                             "dependencies": [safe_serialize(dep) for dep in dependencies],
                             "assigned_vars": [safe_serialize(var) for var in assigned_vars],
                         },
@@ -372,12 +400,14 @@ class VarTracer:
                         },
                     )
                     stack.append(unsupported_event)
-
             return stack
 
         # 开始处理 raw_logs
         logs_copy = self.raw_logs.copy()
-        result = process_scope(logs_copy, depth=0)
+        pbar = tqdm.tqdm(total=len(logs_copy), desc="Processing logs", unit="log") if show_progress else None
+        result = process_scope(logs_copy, depth=0, pbar=pbar if show_progress else None)
+        if pbar:
+            pbar.close()
 
         # 添加时间戳
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -392,8 +422,222 @@ class VarTracer:
             if self.verbose:
                 print(f"Nested JSON call stack saved to '{output_file}'")
 
+        self.exec_stack = output_data  # 保存到实例变量中
         return output_data
 
+    def dep_tree_txt(self, output_path, output_name="VTrace_dep_tree.txt", short_path=True):
+        """
+        生成格式清晰、接近表格的 txt 版本依赖树。output_path 必须提供。
+        以文件分组，每个文件一个依赖表格。
+        每个表格的第一列为变量名，第二列为定义行号，第三列为依赖子表格（依赖变量、first occurrence、co-occurrences）。
+        """
+        if output_path is None:
+            raise ValueError("output_path must be provided.")
+    
+        # 如果 dep_tree 为空，先生成
+        if self.dep_tree is None:
+            self.dep_tree_json(output_path=None)
+    
+        dep_tree = self.dep_tree
+        timestamp = dep_tree.get("trace_started_at", "")
+    
+        def shorten_path(path):
+            path = os.path.abspath(path)
+            parts = path.split(os.sep)
+            if len(parts) <= 4:
+                return path
+            return os.sep.join([parts[0], parts[1], '...', parts[-2], parts[-1]])
+    
+        result_lines = []
+        result_lines.append(f"Dependency tree generated at {timestamp}")
+        result_lines.append("=" * 120)
+    
+        for file_path, var_dict in dep_tree.items():
+            if file_path == "trace_started_at":
+                continue
+            file_disp = shorten_path(file_path) if short_path else file_path
+            result_lines.append(f"\nFile: {file_disp}")
+            result_lines.append("-" * 120)
+            result_lines.append(f"{'Variable':<25} | {'Line':<8} | {'Dependencies':<80}")
+            result_lines.append("-" * 120)
+            if not var_dict:
+                result_lines.append(f"{'-':<25} | {'-':<8} | {'-':<80}")
+                continue
+            for var_key, var_info in var_dict.items():
+                var_name = var_info.get("variableName", var_key)
+                line_no = str(var_info.get("lineNumber", "-"))
+                results = var_info.get("results", {})
+                if not results:
+                    result_lines.append(f"{var_name:<25} | {line_no:<8} | {'-':<80}")
+                    continue
+                # 构建依赖子表格
+                dep_lines = []
+                dep_lines.append(f"{'Dep.Var':<20} | {'First Occurrence':<18} | {'Co-occurrences':<35}")
+                dep_lines.append(f"{'-'*20} | {'-'*18} | {'-'*35}")
+                for dep_var, dep_info in results.items():
+                    first_occ = str(dep_info.get("first_occurrence", "-"))
+                    co_occs = dep_info.get("co_occurrences", [])
+                    if isinstance(co_occs, list):
+                        co_occs_str = ", ".join(str(x) for x in co_occs) if co_occs else "-"
+                    else:
+                        co_occs_str = "-"
+                    dep_lines.append(f"{dep_var:<20} | {first_occ:<18} | {co_occs_str:<35}")
+                # 将依赖子表格合并为单个字符串，缩进显示
+                dep_table_str = "\n    ".join(dep_lines)
+                result_lines.append(f"{var_name:<25} | {line_no:<8} | \n    {dep_table_str}")
+            result_lines.append("-" * 120)
+    
+        output = '\n'.join(result_lines)
+    
+        os.makedirs(output_path, exist_ok=True)
+        output_file = os.path.join(output_path, output_name)
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write(output)
+        if self.verbose:
+            print(f"Txt dependency tree saved to '{output_file}'")
+    
+        return output
+
+    def dep_tree_xlsx(self, output_path, output_name="VTrace_dep_tree.xlsx", short_path=True):
+        """
+        生成依赖树的 XLSX 文件。以文件分组，每个文件一个 sheet，每个 sheet 是依赖表格。
+        第一列为变量名，第二列为定义行号，第三列为依赖变量，第四列为 first occurrence，第五列为 co-occurrences。
+        Sheet 名如有重复自动编号，例如 __init__.py(1)、__init__.py(2)，并按字母表顺序排列。
+        每个sheet第一行显示完整路径。主变量和行号纵向合并居中。所有表格加边框。
+        """
+        import xlsxwriter
+
+        if output_path is None:
+            raise ValueError("output_path must be provided.")
+
+        # 如果 dep_tree 为空，先生成
+        if self.dep_tree is None:
+            self.dep_tree_json(output_path=None)
+
+        dep_tree = self.dep_tree
+
+        def shorten_path(path):
+            path = os.path.abspath(path)
+            parts = path.split(os.sep)
+            if len(parts) <= 4:
+                return path
+            return os.sep.join([parts[0], parts[1], '...', parts[-2], parts[-1]])
+
+        os.makedirs(output_path, exist_ok=True)
+        output_file = os.path.join(output_path, output_name)
+        workbook = xlsxwriter.Workbook(output_file)
+
+        # 定义带边框的格式
+        border_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
+        header_fmt = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+        path_fmt = workbook.add_format({'italic': True, 'border': 1, 'align': 'left', 'valign': 'vcenter'})
+
+        # 收集所有 sheet 信息并排序
+        sheet_infos = []
+        for file_path, var_dict in dep_tree.items():
+            if file_path == "trace_started_at":
+                continue
+            file_disp = shorten_path(file_path) if short_path else file_path
+            base_name = os.path.basename(file_disp)
+            sheet_infos.append((base_name, file_path, var_dict))
+        # 按 base_name 字母表顺序排序
+        sheet_infos.sort(key=lambda x: x[0].lower())
+
+        # 检查 sheet 名称重复并编号
+        sheet_name_count = {}
+        for base_name, file_path, var_dict in sheet_infos:
+            # Excel sheet name max length is 31
+            sheet_name = base_name
+            if len(sheet_name) > 31:
+                sheet_name = sheet_name[-31:]
+            orig_sheet_name = sheet_name
+            count = sheet_name_count.get(orig_sheet_name, 0)
+            while sheet_name in sheet_name_count:
+                count += 1
+                suffix = f"({count})"
+                # 保证加编号后不超长
+                if len(orig_sheet_name) + len(suffix) > 31:
+                    sheet_name = orig_sheet_name[:31 - len(suffix)] + suffix
+                else:
+                    sheet_name = orig_sheet_name + suffix
+            sheet_name_count[orig_sheet_name] = count
+            sheet_name_count[sheet_name] = 0  # 标记已用
+            worksheet = workbook.add_worksheet(sheet_name)
+
+            # 第一行写完整路径
+            worksheet.write(0, 0, file_path, path_fmt)
+
+            # 第二行写表头
+            worksheet.write(1, 0, "Variable", header_fmt)
+            worksheet.write(1, 1, "Line", header_fmt)
+            worksheet.write(1, 2, "Dep.Var", header_fmt)
+            worksheet.write(1, 3, "First Occurrence", header_fmt)
+            worksheet.write(1, 4, "Co-occurrences", header_fmt)
+
+            row = 2
+            if not var_dict:
+                for col in range(5):
+                    worksheet.write(row, col, "-", border_fmt)
+                continue
+            for var_key, var_info in var_dict.items():
+                var_name = var_info.get("variableName", var_key)
+                line_no = str(var_info.get("lineNumber", "-"))
+                results = var_info.get("results", {})
+                dep_items = list(results.items()) if results else []
+                dep_count = len(dep_items) if dep_items else 1
+
+                # 合并主变量和行号的单元格
+                worksheet.merge_range(row, 0, row + dep_count - 1, 0, var_name, border_fmt)
+                worksheet.merge_range(row, 1, row + dep_count - 1, 1, line_no, border_fmt)
+
+                if not dep_items:
+                    worksheet.write(row, 2, "-", border_fmt)
+                    worksheet.write(row, 3, "-", border_fmt)
+                    worksheet.write(row, 4, "-", border_fmt)
+                    row += 1
+                    continue
+
+                for i, (dep_var, dep_info) in enumerate(dep_items):
+                    first_occ = str(dep_info.get("first_occurrence", "-"))
+                    co_occs = dep_info.get("co_occurrences", [])
+                    if isinstance(co_occs, list):
+                        co_occs_str = ", ".join(str(x) for x in co_occs) if co_occs else "-"
+                    else:
+                        co_occs_str = "-"
+                    worksheet.write(row, 2, dep_var, border_fmt)
+                    worksheet.write(row, 3, first_occ, border_fmt)
+                    worksheet.write(row, 4, co_occs_str, border_fmt)
+                    row += 1
+
+        workbook.close()
+        if self.verbose:
+            print(f"XLSX dependency tree saved to '{output_file}'")
+        return output_file
+
+    def dep_tree_json(self, output_path=None, output_name="VTrace_dep_tree.json", show_progress=False):
+            """
+            生成依赖树的 JSON 文件。如果 self.dep_tree 为空，则根据 self.exec_stack 生成。
+            返回 self.dep_tree。
+            """
+            if self.dep_tree is None:
+                # 如果 exec_stack 为空，先生成
+                if self.exec_stack is None:
+                    self.exec_stack_json(output_path=None, show_progress=show_progress)
+                # 构建依赖树
+                dep_tree = DependencyTree(call_stack=json.dumps(self.exec_stack))
+                self.dep_tree = dep_tree.parse_dependency()
+
+            # 输出到文件
+            if output_path:
+                os.makedirs(output_path, exist_ok=True)
+                output_file = os.path.join(output_path, output_name)
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    json.dump(self.dep_tree, f, indent=4)
+                if self.verbose:
+                    print(f"Dependency tree JSON saved to '{output_file}'")
+
+            return self.dep_tree
+    
 class FileVTracer:
     def __init__(self, filepath, verbose=False):
         """
