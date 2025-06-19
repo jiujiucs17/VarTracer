@@ -1,8 +1,11 @@
 import inspect
 import os
-import shutil
 import subprocess
 import json
+import xlsxwriter
+import os
+from tqdm import tqdm
+from datetime import datetime
 
 def safe_serialize(obj):
         """将对象转换为字符串表示"""
@@ -225,179 +228,232 @@ def extension_interface(file_path, print=False):
         #     os.remove(temp_file_path)
         pass
 
-# def compare_exec_stack(exec_stack1, exec_stack2, output_path, output_name="compare_exec_stack_result.xlsx"):
-#     """
-#     比较两个 VarTracer.exec_stack_json 生成的 execution stack（JSON 格式），
-#     输出两部分差异：
-#       1. A 中有但 B 中没有的代码行（文件路径+行号）
-#       2. B 中有但 A 中没有的代码行（文件路径+行号） 
-#     并将结果保存为 xlsx 文件，包含两个 sheet，按文件路径分组，文件路径纵向合并单元格。
-#     """
-#     import xlsxwriter
-#     import os
-
-#     output_xlsx = os.path.join(output_path, output_name)
-
-#     def extract_lines(exec_stack):
-#         """
-#         提取所有 (file_path, line_no, line_content) 元组，按文件路径分组。
-#         返回: {file_path: set((line_no, line_content))}
-#         """
-#         lines_by_file = {}
-#         stack = exec_stack.get("execution_stack", [])
-#         def traverse(stack):
-#             for event in stack:
-#                 details = event.get("details", {})
-#                 file_path = details.get("file_path")
-#                 line_no = details.get("line_no")
-#                 line_content = details.get("line_content")
-#                 event_type = event.get("type", "").upper()
-#                 if event_type == "LINE" and file_path and line_no:
-#                     lines_by_file.setdefault(file_path, set()).add((str(line_no), line_content))
-#                 # 递归 daughter_stack
-#                 if "daughter_stack" in details:
-#                     traverse(details["daughter_stack"])
-#         traverse(stack)
-#         return lines_by_file
-
-#     lines_A = extract_lines(exec_stack1)
-#     lines_B = extract_lines(exec_stack2)
-
-#     # 1. A 中有但 B 中没有
-#     only_in_A = {}
-#     for file_path, lines in lines_A.items():
-#         diff = lines - lines_B.get(file_path, set())
-#         if diff:
-#             only_in_A[file_path] = diff
-
-#     # 2. B 中有但 A 中没有
-#     only_in_B = {}
-#     for file_path, lines in lines_B.items():
-#         diff = lines - lines_A.get(file_path, set())
-#         if diff:
-#             only_in_B[file_path] = diff
-
-#     # 写入 xlsx
-#     workbook = xlsxwriter.Workbook(output_xlsx)
-#     border_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
-#     header_fmt = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-
-#     def write_sheet(sheet_name, data):
-#         worksheet = workbook.add_worksheet(sheet_name)
-#         worksheet.write(0, 0, "File Path", header_fmt)
-#         worksheet.write(0, 1, "Line No", header_fmt)
-#         worksheet.write(0, 2, "Line Content", header_fmt)
-#         row = 1
-#         for file_path in sorted(data.keys()):
-#             lines = sorted(list(data[file_path]), key=lambda x: int(x[0]))
-#             n = len(lines)
-#             if n == 0:
-#                 continue
-#             worksheet.merge_range(row, 0, row + n - 1, 0, file_path, border_fmt)
-#             for i, (line_no, line_content) in enumerate(lines):
-#                 worksheet.write(row + i, 1, line_no, border_fmt)
-#                 worksheet.write(row + i, 2, line_content, border_fmt)
-#             row += n
-
-#     write_sheet("Only_in_A", only_in_A)
-#     write_sheet("Only_in_B", only_in_B)
-#     workbook.close()
-#     return output_xlsx
-
-
-
-def compare_exec_stack(exec_stack1, exec_stack2, output_path, output_name="compare_exec_stack_result.xlsx"):
+def break_down_granularity(exec_stack):
     """
-    比较两个 VarTracer.exec_stack_json 生成的 execution stack（JSON 格式），
-    为每个事件赋予 event.no（顺序编号），并添加 event.endemic（只在当前 stack 中出现为 True）。
-    生成的 xlsx 文件包含两个 sheet，分别为两个 execution stack，包含所有事件及上述属性。
+    将 exec_stack（JSON对象）展开为事件列表，并为每个事件添加 module_event 和 function_event 字段。
+    每个事件包含如下字段：
+      event_no, file_path, event_type, module, call_depth, line_no, line_content, variable, dep. variable,
+      module_event, function_event
     """
-    import xlsxwriter
-    import os
-
-    output_xlsx = os.path.join(output_path, output_name)
-
-    # 提取所有事件，展平成一维列表，保留顺序
-    def flatten_stack(exec_stack):
-        events = []
-        def traverse(stack, no_counter):
-            for event in stack:
-                events.append((no_counter[0], event))
-                no_counter[0] += 1
-                details = event.get("details", {})
-                if "daughter_stack" in details:
-                    traverse(details["daughter_stack"], no_counter)
-        traverse(exec_stack.get("execution_stack", []), [1])
-        return events
-
-    # 判断事件是否相同（文件路径、行号、行内容都相同）
-    def event_key(event):
-        details = event.get("details", {})
-        return (
-            details.get("file_path"),
-            str(details.get("line_no")),
-            str(details.get("line_content"))
-        )
-
-    # 展平两个 execution stack
-    events1 = flatten_stack(exec_stack1)
-    events2 = flatten_stack(exec_stack2)
-
-    # 构建集合用于对比
-    set2 = set(event_key(e) for _, e in events2)
-    set1 = set(event_key(e) for _, e in events1)
-
-    # 为每个事件赋予 event.no 和 event.endemic
-    def annotate_events(events, other_set):
-        annotated = []
-        for no, event in events:
-            key = event_key(event)
-            event = dict(event)  # shallow copy
-            event['no'] = no
-            event['endemic'] = key not in other_set
-            annotated.append(event)
-        return annotated
-
-    annotated1 = annotate_events(events1, set2)
-    annotated2 = annotate_events(events2, set1)
-
-    # 写入 xlsx
-    workbook = xlsxwriter.Workbook(output_xlsx)
-    border_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
-    header_fmt = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-    endemic_false_fmt = workbook.add_format({'font_color': '#C0C0C0'})  # 灰色字体
-
-    headers = [
-        "event.no", "file_path", "event.type", "module", "line_no", "line_content", "event.endemic"
-    ]
-
-    def write_sheet(sheet_name, data):
-        worksheet = workbook.add_worksheet(sheet_name)
-        for col, h in enumerate(headers):
-            worksheet.write(0, col, h, header_fmt)
-        worksheet.autofilter(0, 0, len(data), len(headers) - 1)
-        for row_idx, event in enumerate(sorted(data, key=lambda x: x['no']), 1):
+    # 展平 execution_stack
+    events = []
+    def traverse(stack, event_no_counter):
+        for event in stack:
             details = event.get("details", {})
-            row = [
-                event['no'],
-                details.get("file_path", ""),
-                event.get("type", ""),
-                details.get("module", ""),
-                details.get("line_no", ""),
-                details.get("line_content", ""),
-                event['endemic']
-            ]
-            endemic = event['endemic']
-            for col_idx, value in enumerate(row):
-                if col_idx == 6 and not endemic:
-                    worksheet.write(row_idx, col_idx, value, endemic_false_fmt)
-                else:
-                    worksheet.write(row_idx, col_idx, value, border_fmt)
+            # 变量名
+            assigned_vars = details.get("assigned_vars", [])
+            variable = assigned_vars[0] if assigned_vars else ""
+            # 依赖变量
+            dependencies = details.get("dependencies", [])
+            dep_variable = dependencies[0] if dependencies else ""
+            # if module name is "(unknown-module)", use string "top level script" instead
+            if details.get("module") == "(unknown-module)":
+                module_name = "**** top level script ****"
+            else:
+                module_name = details.get("module")
+            events.append({
+                "event_no": event_no_counter[0],
+                "file_path": details.get("file_path", ""),
+                "event_type": event.get("type", ""),
+                "module": module_name,
+                "call_depth": details.get("depth", ""),
+                "line_no": details.get("line_no", ""),
+                "line_content": details.get("line_content", ""),
+                "variable": variable,
+                "dep. variable": dep_variable,
+                # module_event/function_event 暂时空
+            })
+            event_no_counter[0] += 1
+            # 递归 daughter_stack
+            if "daughter_stack" in details:
+                traverse(details["daughter_stack"], event_no_counter)
+    traverse(exec_stack.get("execution_stack", []), [1])
 
-    write_sheet("ExecStack1", annotated1)
-    write_sheet("ExecStack2", annotated2)
-    workbook.close()
-    return output_xlsx
+    # 计算 module_event 和 function_event
+    module_count = {}
+    function_count = {}
+    last_module = None
+    last_function = None
+    module_event_idx = 0
+    function_event_idx = 0
+
+    for idx, event in enumerate(events):
+        module = event["module"]
+        function = event.get("function_name") or event.get("function") or ""
+        # function_name 可能在 details 里没有，尝试用 func 字段
+        if not function:
+            function = exec_stack.get("execution_stack", [])[0].get("details", {}).get("func", "")
+
+        # module_event
+        if module != last_module:
+            module_event_idx = module_count.get(module, 0) + 1
+            module_count[module] = module_event_idx
+            last_module = module
+        event["module_event"] = f"{module}_{module_event_idx}"
+
+        # function_event
+        func_key = (module, function)
+        if func_key != last_function:
+            function_event_idx = function_count.get(func_key, 0) + 1
+            function_count[func_key] = function_event_idx
+            last_function = func_key
+        event["function_event"] = f"{function}_{function_event_idx}"
+
+    return events
+
+def compare_event_lists(exec_stack0, exec_stack1):
+    """
+    对比两个 exec_stack，分别展开为事件列表，并为每个事件添加 endemic 字段。
+    如果某事件仅在 events1 或 events2 中出现，则其 endemic 字段为 True。
+    判断标准为 (file_path, line_no, line_content) 三元组完全一致。
+    返回 (events1, events2)
+    """
+    events0 = break_down_granularity(exec_stack0)
+    events1 = break_down_granularity(exec_stack1)
+
+    def make_event_key(event):
+        return (event.get("file_path", ""), str(event.get("line_no", "")), str(event.get("line_content", "")))
+
+    set1 = set(make_event_key(e) for e in events1)
+    set0 = set(make_event_key(e) for e in events0)
+
+    for e in events0:
+        e["endemic"] = make_event_key(e) not in set1
+    for e in events1:
+        e["endemic"] = make_event_key(e) not in set0
+
+    return events0, events1
+
+def compare_exec_stack(exec_stack0, exec_stack1, output_path):
+    """
+    对比两个 exec_stack，分别以 module granularity、function granularity、event granularity 展示。
+    输出为 xlsx 文件，包含三个 sheet：
+      1. module_granularity：每个 module_event 的信息
+      2. function_granularity：每个 function_event 的信息
+      3. event_granularity：每个 event 的详细信息
+    此函数主要实现与 xlsx 文件生成有关的逻辑，对于 events 数据的处理被实现在 compare_event_lists 中。
+    每个 granularity 生成一个 sheet，包含超链接到下一级 granularity。
+    """
+
+    # 1. 生成 events0, events1
+    events0, events1 = compare_event_lists(exec_stack0, exec_stack1)
+
+    def build_json(events):
+        # 先按 module_event 分组
+        module_events = []
+        module_event_map = {}
+        for e in events:
+            me = e["module_event"]
+            if me not in module_event_map:
+                module_event_map[me] = []
+            module_event_map[me].append(e)
+        for idx, (me, me_events) in enumerate(module_event_map.items(), 1):
+            module_name = me_events[0]["module"]
+            event_nos = [ev["event_no"] for ev in me_events]
+            endemic = any(ev["endemic"] for ev in me_events)
+            # 按 function_event 分组
+            func_event_map = {}
+            for ev in me_events:
+                fe = ev["function_event"]
+                if fe not in func_event_map:
+                    func_event_map[fe] = []
+                func_event_map[fe].append(ev)
+            unique_func_events = []
+            for fidx, (fe, fe_events) in enumerate(func_event_map.items(), 1):
+                func_name = fe_events[0].get("function_name") or fe_events[0].get("function") or ""
+                file_path = fe_events[0].get("file_path", "")
+                fe_event_nos = [ev["event_no"] for ev in fe_events]
+                fe_endemic = any(ev["endemic"] for ev in fe_events)
+                line_events = []
+                for lev in fe_events:
+                    line_events.append({
+                        "event_no": lev["event_no"],
+                        "event_type": lev["event_type"],
+                        "call_depth": lev["call_depth"],
+                        "file_path": lev["file_path"],
+                        "line_no": lev["line_no"],
+                        "line_content": lev["line_content"],
+                        "variable": lev["variable"],
+                        "dep.variable": lev["dep. variable"],
+                        "endemic": lev["endemic"]
+                    })
+                unique_func_events.append({
+                    "func_event_no": fidx,
+                    "func_name": func_name,
+                    "file_path": file_path,
+                    "first_event_no": min(fe_event_nos),
+                    "last_event_no": max(fe_event_nos),
+                    "endemic": fe_endemic,
+                    "line_events": line_events
+                })
+            module_events.append({
+                "module_event_no": idx,
+                "module_name": module_name,
+                "first_event_no": min(event_nos),
+                "last_event_no": max(event_nos),
+                "endemic": endemic,
+                "unique_func_events": unique_func_events
+            })
+        return module_events
+
+    events0_json = build_json(events0)
+    events1_json = build_json(events1)
+
+    def write_xlsx(events_json, filename):
+        workbook = xlsxwriter.Workbook(os.path.join(output_path, filename))
+        # 1. module_granularity sheet
+        module_headers = [
+            "module_event_no", "module_name", "first_event_no", "last_event_no", "endemic", "unique_func_events"
+        ]
+        module_sheet = workbook.add_worksheet("module_granularity")
+        for col, h in enumerate(module_headers):
+            module_sheet.write(0, col, h)
+        for row, module in enumerate(tqdm(events_json, desc=f"Writing {filename} module_events"), 1):
+            for col, key in enumerate(module_headers):
+                if key == "unique_func_events":
+                    # 超链接到 module_event_n
+                    sheet_name = f"func_events of module_event_{module['module_event_no']}"
+                    module_sheet.write_url(row, col, f"internal:'{sheet_name}'!A1", string=sheet_name)
+                else:
+                    module_sheet.write(row, col, module[key])
+            # 2. 每个 module_event_n sheet
+            func_headers = [
+                "func_event_no", "func_name", "file_path", "first_event_no", "last_event_no", "endemic", "line_events"
+            ]
+            func_sheet = workbook.add_worksheet(f"module_event_{module['module_event_no']}")
+            for col, h in enumerate(func_headers):
+                func_sheet.write(0, col, h)
+            for frow, func in enumerate(module["unique_func_events"], 1):
+                for col, key in enumerate(func_headers):
+                    if key == "line_events":
+                        # 超链接到 module_event_n_func_event_m
+                        sheet_name = f"module_event_{module['module_event_no']}_func_event_{func['func_event_no']}"
+                        func_sheet.write_url(frow, col, f"internal:'{sheet_name}'!A1", string=sheet_name)
+                    else:
+                        func_sheet.write(frow, col, func[key])
+                # 3. 每个 module_event_n_func_event_m sheet
+                event_headers = [
+                    "event_no", "event_type", "call_depth", "file_path", "line_no",
+                    "line_content", "variable", "dep.variable", "endemic"
+                ]
+                event_sheet = workbook.add_worksheet(
+                    f"module_event_{module['module_event_no']}_func_event_{func['func_event_no']}"
+                )
+                for ecol, eh in enumerate(event_headers):
+                    event_sheet.write(0, ecol, eh)
+                for erow, event in enumerate(func["line_events"], 1):
+                    for ecol, eh in enumerate(event_headers):
+                        event_sheet.write(erow, ecol, event[eh])
+        workbook.close()
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    write_xlsx(events0_json, f"stack0_{timestamp}.xlsx")
+    write_xlsx(events1_json, f"stack1_{timestamp}.xlsx")
+
+    # print(f"length of events0: {len(events0)}")
+    # print(f"length of events1: {len(events1)}")
+
+    return events0_json, events1_json
 
 def compare_dependency(dep1, dep2, output_path, output_name="compare_dependency_result.xlsx"):
     """

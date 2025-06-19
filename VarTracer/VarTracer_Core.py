@@ -4,7 +4,7 @@ import linecache
 import sysconfig
 import pkgutil
 import json
-import tqdm
+from tqdm import tqdm
 from datetime import datetime
 
 from ASTParser import LineDependencyAnalyzer, DependencyTree
@@ -404,7 +404,7 @@ class VarTracer:
 
         # 开始处理 raw_logs
         logs_copy = self.raw_logs.copy()
-        pbar = tqdm.tqdm(total=len(logs_copy), desc="Processing logs", unit="log") if show_progress else None
+        pbar = tqdm(total=len(logs_copy), desc="Processing logs", unit="log") if show_progress else None
         result = process_scope(logs_copy, depth=0, pbar=pbar if show_progress else None)
         if pbar:
             pbar.close()
