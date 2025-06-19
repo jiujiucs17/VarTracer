@@ -412,8 +412,8 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
             for col, key in enumerate(module_headers):
                 if key == "unique_func_events":
                     # 超链接到 module_event_n
-                    sheet_name = f"func_events of module_event_{module['module_event_no']}"
-                    module_sheet.write_url(row, col, f"internal:'{sheet_name}'!A1", string=sheet_name)
+                    sheet_name = f"module_event_{module['module_event_no']}"
+                    module_sheet.write_url(row, col, f"internal:'{sheet_name}'!A1", string="func_events" + sheet_name)
                 else:
                     module_sheet.write(row, col, module[key])
             # 2. 每个 module_event_n sheet
@@ -444,6 +444,18 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
                 for erow, event in enumerate(func["line_events"], 1):
                     for ecol, eh in enumerate(event_headers):
                         event_sheet.write(erow, ecol, event[eh])
+        
+        # 在所有工作簿的数据行最下面添加两行，并在第二行第一列添加超链接
+        for worksheet in workbook.worksheets():
+            # 获取当前工作表的数据行数
+            last_row = worksheet.dim_rowmax + 1 if hasattr(worksheet, 'dim_rowmax') and worksheet.dim_rowmax is not None else 1
+            
+            # 添加两行空行
+            worksheet.write(last_row, 0, "")
+            worksheet.write(last_row + 1, 0, "")
+            
+            # 在第二行的第一列添加超链接
+            worksheet.write_url(last_row + 1, 0, "internal:'module_granularity'!A1", string="back to module granularity")
         workbook.close()
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
