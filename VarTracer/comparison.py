@@ -7,8 +7,8 @@ output_folder = "/Users/zhangmengqi/Desktop/test_case_for_extension"
 
 # compare execution stacks
 print("Comparing execution stacks...")
-exec_stack_json_1_path = output_folder + "/exec_stack" + "/exec_stack_task_2_1.json"
-exec_stack_json_0_path = output_folder + "/exec_stack" + "/exec_stack_task_2_0.json"
+exec_stack_json_1_path = output_folder + "/exec_stack" + "/exec_stack_task_3_1.json"
+exec_stack_json_0_path = output_folder + "/exec_stack" + "/exec_stack_task_3_0.json"
 
 # read json file from json document
 with open(exec_stack_json_1_path, 'r', encoding='utf-8') as f:

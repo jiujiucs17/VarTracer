@@ -413,7 +413,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
                 if key == "unique_func_events":
                     # 超链接到 module_event_n
                     sheet_name = f"module_event_{module['module_event_no']}"
-                    module_sheet.write_url(row, col, f"internal:'{sheet_name}'!A1", string="func_events" + sheet_name)
+                    module_sheet.write_url(row, col, f"internal:'{sheet_name}'!A1", string="func_events of " + sheet_name)
                 else:
                     module_sheet.write(row, col, module[key])
             # 2. 每个 module_event_n sheet
@@ -462,8 +462,8 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
     write_xlsx(events0_json, f"stack0_{timestamp}.xlsx")
     write_xlsx(events1_json, f"stack1_{timestamp}.xlsx")
 
-    # print(f"length of events0: {len(events0)}")
-    # print(f"length of events1: {len(events1)}")
+    print(f"length of events0: {len(events0)}")
+    print(f"length of events1: {len(events1)}")
 
     return events0_json, events1_json
 

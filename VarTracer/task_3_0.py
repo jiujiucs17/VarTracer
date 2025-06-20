@@ -1,5 +1,3 @@
-# this is task_2_1, using the autograd functionality of pytorch
-
 import torch
 import torch.nn as nn
 
@@ -10,27 +8,20 @@ vt = VarTracer()
 vt.start()
 # -------------- VarTracer related code --------------
 
-class MLP(nn.Module):
+class SimpleModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(32, 64)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(64, 10)
+        self.linear1 = nn.Linear(8, 4)
 
     def forward(self, x):
-        return self.fc2(self.relu(self.fc1(x)))
+        x = self.linear1(x)
+        return x
 
-# 初始化模型与数据
-model = MLP()
-x = torch.randn(16, 32, requires_grad=True)  # 启用 autograd
-target = torch.randint(0, 10, (16,))
-criterion = nn.CrossEntropyLoss()
-
-# 前向与反向
-output = model(x)
-loss = criterion(output, target)
-grads = torch.autograd.grad(loss, model.parameters())  # 使用 autograd 引擎
-print("Computed gradients")
+model = SimpleModel()
+x = torch.randn(1, 8)
+with torch.no_grad():
+    y = model(x)
+print("Output without extra linear:", y)
 
 # -------------- VarTracer related code --------------
 vt.stop()
@@ -43,7 +34,7 @@ print("Generating execution stack and dependency tree...")
 
 print("Generating execution stack JSON...")
 exec_stack_json_output_path = f"{output_path}/exec_stack"
-vt.exec_stack_json(output_path=exec_stack_json_output_path, output_name="exec_stack_task_2_1.json", show_progress=True)
+vt.exec_stack_json(output_path=exec_stack_json_output_path, output_name="exec_stack_task_3_0.json", show_progress=True)
 
 print("Execution stack JSON generated")
 # -------------- VarTracer related code --------------
