@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 
 # -------------- VarTracer related code --------------
 from VarTracer_Core import *
@@ -7,9 +8,23 @@ vt = VarTracer()
 vt.start()
 # -------------- VarTracer related code --------------
 
-x = torch.arange(20).reshape(4, 5)
-# y = x[1:3, ::2]  # Slice rows 1-2 and every other column
-z = x.view(-1)   # Flatten
+class SimpleModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # 将 nn.Linear 替换为 nn.Conv1d
+        self.conv1 = nn.Conv1d(8, 4, kernel_size=1)
+
+    def forward(self, x):
+        # x shape: (batch_size, in_channels, width)
+        x = self.conv1(x)
+        return x
+
+model = SimpleModel()
+# 输入 shape: (batch_size, in_channels, width)
+x = torch.randn(1, 8, 5)
+with torch.no_grad():
+    y = model(x)
+print("Output with conv1d:", y)
 
 # -------------- VarTracer related code --------------
 vt.stop()
@@ -22,7 +37,7 @@ print("Generating execution stack and dependency tree...")
 
 print("Generating execution stack JSON...")
 exec_stack_json_output_path = f"{output_path}/exec_stack"
-vt.exec_stack_json(output_path=exec_stack_json_output_path, output_name="exec_stack_task_4_1.json", show_progress=True)
+vt.exec_stack_json(output_path=exec_stack_json_output_path, output_name="exec_stack_task_3_1.json", show_progress=True)
 
 print("Execution stack JSON generated")
 # -------------- VarTracer related code --------------
