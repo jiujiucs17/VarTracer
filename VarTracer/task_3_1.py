@@ -12,18 +12,16 @@ class SimpleModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.linear1 = nn.Linear(8, 4)
-        self.linear2 = nn.Linear(4, 2)  # 额外的 Linear 层
 
     def forward(self, x):
         x = self.linear1(x)
-        x = self.linear2(x)
         return x
 
 model = SimpleModel()
 x = torch.randn(1, 8)
 with torch.no_grad():
     y = model(x)
-print("Output with extra linear:", y)
+print("Output with linear:", y)
 
 # -------------- VarTracer related code --------------
 vt.stop()

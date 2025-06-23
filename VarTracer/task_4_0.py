@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 
 # -------------- VarTracer related code --------------
 from VarTracer_Core import *
@@ -8,20 +7,7 @@ vt = VarTracer()
 vt.start()
 # -------------- VarTracer related code --------------
 
-class SimpleModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.linear1 = nn.Linear(8, 4)
-
-    def forward(self, x):
-        x = x
-        return x
-
-model = SimpleModel()
-x = torch.randn(1, 8)
-with torch.no_grad():
-    y = model(x)
-print("Output without linear:", y)
+x = torch.arange(20).reshape(4, 5)
 
 # -------------- VarTracer related code --------------
 vt.stop()
@@ -34,7 +20,7 @@ print("Generating execution stack and dependency tree...")
 
 print("Generating execution stack JSON...")
 exec_stack_json_output_path = f"{output_path}/exec_stack"
-vt.exec_stack_json(output_path=exec_stack_json_output_path, output_name="exec_stack_task_3_0.json", show_progress=True)
+vt.exec_stack_json(output_path=exec_stack_json_output_path, output_name="exec_stack_task_4_0.json", show_progress=True)
 
 print("Execution stack JSON generated")
 # -------------- VarTracer related code --------------
