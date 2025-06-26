@@ -3,9 +3,9 @@ import os
 import subprocess
 import json
 import xlsxwriter
-import os
 from tqdm import tqdm
 from datetime import datetime
+import openpyxl
 
 def safe_serialize(obj):
         """将对象转换为字符串表示"""
@@ -303,8 +303,8 @@ def break_down_granularity(exec_stack):
 
 def compare_event_lists(exec_stack0, exec_stack1):
     """
-    对比两个 exec_stack，分别展开为事件列表，并为每个事件添加 endemic 字段。
-    如果某事件仅在 events1 或 events2 中出现，则其 endemic 字段为 True。
+    对比两个 exec_stack，分别展开为事件列表，并为每个事件添加 unique_to_this_feature 字段。
+    如果某事件仅在 events1 或 events2 中出现，则其 unique_to_this_feature 字段为 True。
     判断标准为 (file_path, line_no, line_content) 三元组完全一致。
     返回 (events1, events2)
     """
@@ -318,30 +318,67 @@ def compare_event_lists(exec_stack0, exec_stack1):
     set0 = set(make_event_key(e) for e in events0)
 
     for e in events0:
-        e["endemic"] = make_event_key(e) not in set1
+        e["unique_to_this_feature"] = make_event_key(e) not in set1
     for e in events1:
-        e["endemic"] = make_event_key(e) not in set0
+        e["unique_to_this_feature"] = make_event_key(e) not in set0
 
     return events0, events1
 
 def compare_exec_stack(exec_stack0, exec_stack1, output_path):
     """
     对比两个 exec_stack，分别以 module granularity、function granularity、event granularity 展示。
-    输出为 xlsx 文件，包含三个 sheet：
+    输出为 xlsx 文件，包含多个 sheet：
       1. module_granularity：每个 module_event 的信息
-      2. function_granularity：每个 function_event 的信息
-      3. event_granularity：每个 event 的详细信息
-    此函数主要实现与 xlsx 文件生成有关的逻辑，对于 events 数据的处理被实现在 compare_event_lists 中。
-    每个 granularity 生成一个 sheet，包含超链接到下一级 granularity。
+      2. module_event_n：每个 module_event 的 func_event 信息，包含所有 func_event，并有 this_context 字段
+      3. module_event_n_func_event_m：每个 func_event 的 line_event 信息，包含所有 line_event，并有 this_context 字段
+    所有 sheet 都包含完整数据，并添加 this_context 字段。
+    保存后用 openpyxl 设置除 module_granularity 外所有 sheet 的筛选条件为 this_context=true。
     """
 
     # 1. 生成 events0, events1
     events0, events1 = compare_event_lists(exec_stack0, exec_stack1)
 
     def build_json(events):
-        # 先按 module_event 分组
-        module_events = []
+        # 提取所有 func_event
+        func_event_map = {}
+        func_event_list = []
+        for e in events:
+            fe = e["function_event"]
+            if fe not in func_event_map:
+                func_event_map[fe] = []
+            func_event_map[fe].append(e)
+        for fe, fe_events in func_event_map.items():
+            func_name = fe_events[0].get("function_name") or fe_events[0].get("function") or ""
+            file_path = fe_events[0].get("file_path", "")
+            fe_event_nos = [ev["event_no"] for ev in fe_events]
+            fe_unique_to_this_feature = any(ev["unique_to_this_feature"] for ev in fe_events)
+            line_events = []
+            for lev in fe_events:
+                line_events.append({
+                    "event_no": lev["event_no"],
+                    "event_type": lev["event_type"],
+                    "call_depth": lev["call_depth"],
+                    "file_path": lev["file_path"],
+                    "line_no": lev["line_no"],
+                    "line_content": lev["line_content"],
+                    "variable": lev["variable"],
+                    "dep.variable": lev["dep. variable"],
+                    "unique_to_this_feature": lev["unique_to_this_feature"],
+                    "function_event": fe
+                })
+            func_event_list.append({
+                "func_event_no": fe_events[0]["function_event"],
+                "func_name": func_name,
+                "file_path": file_path,
+                "first_event_no": min(fe_event_nos),
+                "last_event_no": max(fe_event_nos),
+                "unique_to_this_feature": fe_unique_to_this_feature,
+                "line_events": line_events,
+                "module_event": fe_events[0]["module_event"]
+            })
+        # 提取所有 module_event
         module_event_map = {}
+        module_event_list = []
         for e in events:
             me = e["module_event"]
             if me not in module_event_map:
@@ -350,123 +387,188 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
         for idx, (me, me_events) in enumerate(module_event_map.items(), 1):
             module_name = me_events[0]["module"]
             event_nos = [ev["event_no"] for ev in me_events]
-            endemic = any(ev["endemic"] for ev in me_events)
-            # 按 function_event 分组
-            func_event_map = {}
-            for ev in me_events:
-                fe = ev["function_event"]
-                if fe not in func_event_map:
-                    func_event_map[fe] = []
-                func_event_map[fe].append(ev)
-            unique_func_events = []
-            for fidx, (fe, fe_events) in enumerate(func_event_map.items(), 1):
-                func_name = fe_events[0].get("function_name") or fe_events[0].get("function") or ""
-                file_path = fe_events[0].get("file_path", "")
-                fe_event_nos = [ev["event_no"] for ev in fe_events]
-                fe_endemic = any(ev["endemic"] for ev in fe_events)
-                line_events = []
-                for lev in fe_events:
-                    line_events.append({
-                        "event_no": lev["event_no"],
-                        "event_type": lev["event_type"],
-                        "call_depth": lev["call_depth"],
-                        "file_path": lev["file_path"],
-                        "line_no": lev["line_no"],
-                        "line_content": lev["line_content"],
-                        "variable": lev["variable"],
-                        "dep.variable": lev["dep. variable"],
-                        "endemic": lev["endemic"]
-                    })
-                unique_func_events.append({
-                    "func_event_no": fidx,
-                    "func_name": func_name,
-                    "file_path": file_path,
-                    "first_event_no": min(fe_event_nos),
-                    "last_event_no": max(fe_event_nos),
-                    "endemic": fe_endemic,
-                    "line_events": line_events
-                })
-            module_events.append({
+            unique_to_this_feature = any(ev["unique_to_this_feature"] for ev in me_events)
+            module_event_list.append({
                 "module_event_no": idx,
+                "module_event": me,
                 "module_name": module_name,
                 "first_event_no": min(event_nos),
                 "last_event_no": max(event_nos),
-                "endemic": endemic,
-                "unique_func_events": unique_func_events
+                "unique_to_this_feature": unique_to_this_feature
             })
-        return module_events
+        return module_event_list, func_event_list
 
-    events0_json = build_json(events0)
-    events1_json = build_json(events1)
-
-    def write_xlsx(events_json, filename):
+    def write_xlsx(events, filename):
+        module_event_list, func_event_list = build_json(events)
+        # 提取所有 line_event
+        all_line_events = []
+        for func in func_event_list:
+            for le in func["line_events"]:
+                all_line_events.append(le)
         workbook = xlsxwriter.Workbook(os.path.join(output_path, filename))
+        highlight_cell_format_1 = workbook.add_format({
+            'bg_color': "#FFEDEF",    # 背景色
+            'font_color': '#9C0006',  # 字体颜色
+            'border': 1,  # 边框
+            'align': 'left', 
+            'valign': 'vcenter'
+        })
+        highlight_cell_format_2 = workbook.add_format({
+            'bg_color': "#FFC7CE",    # 背景色
+            'font_color': '#9C0006',  # 字体颜色
+            'border': 1,  # 边框
+            'align': 'left', 
+            'valign': 'vcenter'
+        })
+        regular_cell_format = workbook.add_format({
+            'bg_color': '#FFFFFF',    # 背景色
+            'font_color': '#000000',  # 字体颜色
+            'border': 1,  # 边框
+            'align': 'left', 
+            'valign': 'vcenter'
+        })
         # 1. module_granularity sheet
+        # module_headers = [
+        #     "module_event_no", "module_name", "first_event_no", "last_event_no", "unique_to_this_feature", "associated_func_events" 
+        # ]
         module_headers = [
-            "module_event_no", "module_name", "first_event_no", "last_event_no", "endemic", "unique_func_events"
+            "module_event_no", "module_name", "exec_stack_slice", "unique_to_this_feature", "associated_func_events" 
         ]
         module_sheet = workbook.add_worksheet("module_granularity")
         for col, h in enumerate(module_headers):
             module_sheet.write(0, col, h)
-        for row, module in enumerate(tqdm(events_json, desc=f"Writing {filename} module_events"), 1):
-            for col, key in enumerate(module_headers):
-                if key == "unique_func_events":
-                    # 超链接到 module_event_n
-                    sheet_name = f"module_event_{module['module_event_no']}"
-                    module_sheet.write_url(row, col, f"internal:'{sheet_name}'!A1", string="func_events of " + sheet_name)
+
+        for row, module in enumerate(module_event_list, 1):
+            for col, key in enumerate(module_headers[:-1]):  # 最后一个字段 "associated_func_events" 不在 module_event_list 中
+                if key == "exec_stack_slice":
+                    module_sheet.write(row, col, f"No. {module['first_event_no']} to {module['last_event_no']} of all exec events")
                 else:
                     module_sheet.write(row, col, module[key])
-            # 2. 每个 module_event_n sheet
+
+        # 2. 每个 module_event_n sheet
+        for row, module in tqdm(enumerate(module_event_list, 1), desc="Generating module_events & func_events", total=len(module_event_list)):
             func_headers = [
-                "func_event_no", "func_name", "file_path", "first_event_no", "last_event_no", "endemic", "line_events"
-            ]
-            func_sheet = workbook.add_worksheet(f"module_event_{module['module_event_no']}")
+            "func_event_no", "func_name", "file_path", "exec_stack_slice", "unique_to_this_feature", f"within_module_event_{row}", "associated_line_events"
+        ]
+
+            sheet_name = f"module_event_{module['module_event_no']}"
+            func_sheet = workbook.add_worksheet(sheet_name)
+
+            if len(func_event_list) == 0:
+                # 如果没有 func_event，则跳过这个 module_event 的 sheet
+                module_sheet.write(row, len(module_headers) - 1, "-")
+                continue
+
+            module_sheet.write_url(row, len(module_headers) - 1, 
+                                   f"internal:'{sheet_name}'!A1",
+                                   string=f"func_events of module_event_{row}")  # 添加超链接到 func_event sheet
+
             for col, h in enumerate(func_headers):
                 func_sheet.write(0, col, h)
-            for frow, func in enumerate(module["unique_func_events"], 1):
-                for col, key in enumerate(func_headers):
-                    if key == "line_events":
-                        # 超链接到 module_event_n_func_event_m
-                        sheet_name = f"module_event_{module['module_event_no']}_func_event_{func['func_event_no']}"
-                        func_sheet.write_url(frow, col, f"internal:'{sheet_name}'!A1", string=sheet_name)
+            
+            for frow, func in enumerate(func_event_list, 1):
+                this_context = func["module_event"] == module["module_event"]
+                if this_context and func["unique_to_this_feature"]:
+                    row_format = highlight_cell_format_2
+                elif not this_context and not func["unique_to_this_feature"]:
+                    row_format = regular_cell_format
+                else:
+                    row_format = highlight_cell_format_1
+
+                for col, key in enumerate(func_headers[:-1]):  # 最后一个字段 "associated_line_events" 不在 func_event_list 中
+                    if key == f"within_module_event_{row}":
+                        func_sheet.write(frow, col, this_context, row_format)
+                    elif key == "exec_stack_slice":
+                        func_sheet.write(frow, col, f"No. {func['first_event_no']} to {func['last_event_no']} of all exec events", row_format)
                     else:
-                        func_sheet.write(frow, col, func[key])
+                        func_sheet.write(frow, col, func[key] if key in func else "", row_format)
+
                 # 3. 每个 module_event_n_func_event_m sheet
-                event_headers = [
-                    "event_no", "event_type", "call_depth", "file_path", "line_no",
-                    "line_content", "variable", "dep.variable", "endemic"
-                ]
-                event_sheet = workbook.add_worksheet(
-                    f"module_event_{module['module_event_no']}_func_event_{func['func_event_no']}"
-                )
-                for ecol, eh in enumerate(event_headers):
-                    event_sheet.write(0, ecol, eh)
-                for erow, event in enumerate(func["line_events"], 1):
+                if this_context:
+                    event_headers = [
+                        "event_no", "event_type", "call_depth", "file_path", "line_no",
+                        "line_content", "variable", "dep.variable", "unique_to_this_feature", f"within_func_event_{frow}"
+                    ]
+                    event_sheet_name = f"module_event_{module['module_event_no']}_func_event_{frow}"
+                    event_sheet = workbook.add_worksheet(event_sheet_name)
+
+                    func_sheet.write_url(frow, len(func_headers) - 1,
+                                         f"internal:'{event_sheet_name}'!A1",
+                                         string=f"line_events of func_event_{frow}")
+
                     for ecol, eh in enumerate(event_headers):
-                        event_sheet.write(erow, ecol, event[eh])
+                        event_sheet.write(0, ecol, eh)
+                    for erow, event in enumerate(all_line_events, 1):
+                        this_context_event = event["function_event"] == func["func_event_no"]
+                        # erow_format = highlight_cell_format if this_context_event else regular_cell_format
+
+                        if this_context_event and event["unique_to_this_feature"]:
+                            erow_format = highlight_cell_format_2
+                        elif not this_context_event and not event["unique_to_this_feature"]:
+                            erow_format = regular_cell_format
+                        else:
+                            erow_format = highlight_cell_format_1
+
+                        for ecol, eh in enumerate(event_headers):
+                            if eh == f"within_func_event_{frow}":
+                                event_sheet.write(erow, ecol, this_context_event, erow_format)
+                            else:
+                                value = "-"
+                                if eh in event:
+                                    value = event[eh]
+                                    if value is None or value == "":
+                                        value = "-"
+                                event_sheet.write(erow, ecol, value, erow_format)
+
+                    last_col = event_sheet.dim_colmax if hasattr(event_sheet, 'dim_colmax') and event_sheet.dim_colmax is not None else 0
+                    last_row = event_sheet.dim_rowmax if hasattr(event_sheet, 'dim_rowmax') and event_sheet.dim_rowmax is not None else 0
+                    # 在最后一列右侧第一个单元格添加超链接
+                    event_sheet.write_url(2, last_col + 3, f"internal:'{sheet_name}'!A1", string=f"back to function granularity")
+                    event_sheet.write_url(last_row + 2, 0, f"internal:'{sheet_name}'!A1", string=f"back to function granularity")
+                else:
+                    func_sheet.write(frow, len(func_headers) - 1, "-")
         
-        # 在所有工作簿的数据行最下面添加两行，并在第二行第一列添加超链接
+        print("cleaning up workbooks...")
         for worksheet in workbook.worksheets():
-            # 获取当前工作表的数据行数
-            last_row = worksheet.dim_rowmax + 1 if hasattr(worksheet, 'dim_rowmax') and worksheet.dim_rowmax is not None else 1
-            
-            # 添加两行空行
-            worksheet.write(last_row, 0, "")
-            worksheet.write(last_row + 1, 0, "")
-            
-            # 在第二行的第一列添加超链接
-            worksheet.write_url(last_row + 1, 0, "internal:'module_granularity'!A1", string="back to module granularity")
+            # 获取当前工作表的数据行数和列数
+            last_row = worksheet.dim_rowmax if hasattr(worksheet, 'dim_rowmax') and worksheet.dim_rowmax is not None else 1
+            last_col = worksheet.dim_colmax if hasattr(worksheet, 'dim_colmax') and worksheet.dim_colmax is not None else 0
+            # 在最后一列右侧第一个单元格添加超链接
+            worksheet.write_url(1, (last_col if len(worksheet.name) >= 22 else last_col + 3), "internal:'module_granularity'!A1", string="back to module granularity")
+            worksheet.write_url((last_row + 1 if len(worksheet.name) >= 22 else last_row + 2), 0, "internal:'module_granularity'!A1", string="back to module granularity")
+
         workbook.close()
 
+        # 用 openpyxl 设置筛选条件
+        wb = openpyxl.load_workbook(os.path.join(output_path, filename))
+        for ws in wb.worksheets:
+            if ws.title == "module_granularity":
+                for col in range(1, ws.max_column + 1):
+                    if ws.cell(row=1, column=col).value == "unique_to_this_feature":
+                        unique_to_this_feature_col = col
+                        break
+
+                ws.auto_filter.ref = ws.dimensions
+                ws.auto_filter.add_filter_column(unique_to_this_feature_col - 1, ["True"])
+            else:
+                # 找到 this_context 列
+                for col in range(1, ws.max_column + 1):
+                    if ws.cell(row=1, column=col).value.startswith("within_"):
+                        this_context_col = col
+                        break
+                # 设置筛选
+                ws.auto_filter.ref = ws.dimensions
+                ws.auto_filter.add_filter_column(this_context_col - 1, ["True"])
+        wb.save(os.path.join(output_path, filename))
+
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    write_xlsx(events0_json, f"stack0_{timestamp}.xlsx")
-    write_xlsx(events1_json, f"stack1_{timestamp}.xlsx")
+    write_xlsx(events0, f"stack0_{timestamp}.xlsx")
+    write_xlsx(events1, f"stack1_{timestamp}.xlsx")
 
     print(f"length of events0: {len(events0)}")
     print(f"length of events1: {len(events1)}")
 
-    return events0_json, events1_json
-
+    return None, None
 def compare_dependency(dep1, dep2, output_path, output_name="compare_dependency_result.xlsx"):
     """
     比较两个 VarTracer.dep_tree_json 生成的依赖树（JSON 格式），
