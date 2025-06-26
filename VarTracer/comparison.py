@@ -17,8 +17,19 @@ with open(exec_stack_json_1_path, 'r', encoding='utf-8') as f:
 with open(exec_stack_json_0_path, 'r', encoding='utf-8') as f:
     exec_stack_json_0 = json.load(f)
 
+# events = break_down_granularity(exec_stack_json_1)
+# # save the events to a txt file
+# with open(output_folder + "/exec_events" + "/events_3_1.txt", 'w', encoding='utf-8') as f:
+#     for event in events:
+#         f.write(f"{event}\n")
+
+
+
 compare_exec_stack(exec_stack_json_0, exec_stack_json_1, output_folder)
 print("Execution stacks compared and saved to compare_exec_stack_result.xlsx")
+
+
+
 
 # # comapre dependencies
 # print("Comparing dependencies...")

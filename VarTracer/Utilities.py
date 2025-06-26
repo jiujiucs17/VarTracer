@@ -256,6 +256,7 @@ def break_down_granularity(exec_stack):
                 "file_path": details.get("file_path", ""),
                 "event_type": event.get("type", ""),
                 "module": module_name,
+                "function": details.get("func", ""),
                 "call_depth": details.get("depth", ""),
                 "line_no": details.get("line_no", ""),
                 "line_content": details.get("line_content", ""),
@@ -279,10 +280,7 @@ def break_down_granularity(exec_stack):
 
     for idx, event in enumerate(events):
         module = event["module"]
-        function = event.get("function_name") or event.get("function") or ""
-        # function_name 可能在 details 里没有，尝试用 func 字段
-        if not function:
-            function = exec_stack.get("execution_stack", [])[0].get("details", {}).get("func", "")
+        function = event.get("function")
 
         # module_event
         if module != last_module:
@@ -292,12 +290,12 @@ def break_down_granularity(exec_stack):
         event["module_event"] = f"{module}_{module_event_idx}"
 
         # function_event
-        func_key = (module, function)
+        func_key = (f"{module}_{module_event_idx}", function)
         if func_key != last_function:
             function_event_idx = function_count.get(func_key, 0) + 1
             function_count[func_key] = function_event_idx
             last_function = func_key
-        event["function_event"] = f"{function}_{function_event_idx}"
+        event["function_event"] = f"{module}_{module_event_idx}_{function}_{function_event_idx}"
 
     return events
 
@@ -347,6 +345,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
             if fe not in func_event_map:
                 func_event_map[fe] = []
             func_event_map[fe].append(e)
+
         for fe, fe_events in func_event_map.items():
             func_name = fe_events[0].get("function_name") or fe_events[0].get("function") or ""
             file_path = fe_events[0].get("file_path", "")
@@ -364,10 +363,12 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
                     "variable": lev["variable"],
                     "dep.variable": lev["dep. variable"],
                     "unique_to_this_feature": lev["unique_to_this_feature"],
+                    "module_event": lev["module_event"],
                     "function_event": fe
                 })
             func_event_list.append({
-                "func_event_no": fe_events[0]["function_event"],
+                "func_event_no": len(func_event_list) + 1,
+                "func_event_identifier": fe, #fe_events[0]["function_event"],
                 "func_name": func_name,
                 "file_path": file_path,
                 "first_event_no": min(fe_event_nos),
@@ -390,7 +391,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
             unique_to_this_feature = any(ev["unique_to_this_feature"] for ev in me_events)
             module_event_list.append({
                 "module_event_no": idx,
-                "module_event": me,
+                "module_event_identifier": me,
                 "module_name": module_name,
                 "first_event_no": min(event_nos),
                 "last_event_no": max(event_nos),
@@ -406,14 +407,14 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
             for le in func["line_events"]:
                 all_line_events.append(le)
         workbook = xlsxwriter.Workbook(os.path.join(output_path, filename))
-        highlight_cell_format_1 = workbook.add_format({
+        highlight_cell_format_pale = workbook.add_format({
             'bg_color': "#FFEDEF",    # 背景色
             'font_color': '#9C0006',  # 字体颜色
             'border': 1,  # 边框
             'align': 'left', 
             'valign': 'vcenter'
         })
-        highlight_cell_format_2 = workbook.add_format({
+        highlight_cell_format_shine = workbook.add_format({
             'bg_color': "#FFC7CE",    # 背景色
             'font_color': '#9C0006',  # 字体颜色
             'border': 1,  # 边框
@@ -428,27 +429,28 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
             'valign': 'vcenter'
         })
         # 1. module_granularity sheet
-        # module_headers = [
-        #     "module_event_no", "module_name", "first_event_no", "last_event_no", "unique_to_this_feature", "associated_func_events" 
-        # ]
         module_headers = [
-            "module_event_no", "module_name", "exec_stack_slice", "unique_to_this_feature", "associated_func_events" 
+            "module_event_no", "module_event_identifier", "module_name", "exec_stack_slice", "unique_to_this_feature", "associated_func_events" 
         ]
         module_sheet = workbook.add_worksheet("module_granularity")
         for col, h in enumerate(module_headers):
             module_sheet.write(0, col, h)
 
         for row, module in enumerate(module_event_list, 1):
+            row_format = regular_cell_format
+            if module["unique_to_this_feature"]:
+                row_format = highlight_cell_format_shine
+
             for col, key in enumerate(module_headers[:-1]):  # 最后一个字段 "associated_func_events" 不在 module_event_list 中
                 if key == "exec_stack_slice":
-                    module_sheet.write(row, col, f"No. {module['first_event_no']} to {module['last_event_no']} of all exec events")
+                    module_sheet.write(row, col, f"No. {module['first_event_no']} to {module['last_event_no']} of all exec events", row_format)
                 else:
-                    module_sheet.write(row, col, module[key])
+                    module_sheet.write(row, col, module[key], row_format)
 
         # 2. 每个 module_event_n sheet
         for row, module in tqdm(enumerate(module_event_list, 1), desc="Generating module_events & func_events", total=len(module_event_list)):
             func_headers = [
-            "func_event_no", "func_name", "file_path", "exec_stack_slice", "unique_to_this_feature", f"within_module_event_{row}", "associated_line_events"
+            "func_event_no", "func_event_identifier", "func_name", "file_path", "module_event", "exec_stack_slice", "unique_to_this_feature", f"within_module_event_{row}", "associated_line_events"
         ]
 
             sheet_name = f"module_event_{module['module_event_no']}"
@@ -461,19 +463,19 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
 
             module_sheet.write_url(row, len(module_headers) - 1, 
                                    f"internal:'{sheet_name}'!A1",
-                                   string=f"func_events of module_event_{row}")  # 添加超链接到 func_event sheet
+                                   string=f"func_events")  # 添加超链接到 func_event sheet
 
             for col, h in enumerate(func_headers):
                 func_sheet.write(0, col, h)
             
             for frow, func in enumerate(func_event_list, 1):
-                this_context = func["module_event"] == module["module_event"]
+                this_context = func["module_event"] == module["module_event_identifier"]
                 if this_context and func["unique_to_this_feature"]:
-                    row_format = highlight_cell_format_2
+                    row_format = highlight_cell_format_shine
                 elif not this_context and not func["unique_to_this_feature"]:
                     row_format = regular_cell_format
                 else:
-                    row_format = highlight_cell_format_1
+                    row_format = highlight_cell_format_pale
 
                 for col, key in enumerate(func_headers[:-1]):  # 最后一个字段 "associated_line_events" 不在 func_event_list 中
                     if key == f"within_module_event_{row}":
@@ -486,7 +488,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
                 # 3. 每个 module_event_n_func_event_m sheet
                 if this_context:
                     event_headers = [
-                        "event_no", "event_type", "call_depth", "file_path", "line_no",
+                        "event_no", "event_type", "call_depth", "file_path", "module_event", "function_event", "line_no",
                         "line_content", "variable", "dep.variable", "unique_to_this_feature", f"within_func_event_{frow}"
                     ]
                     event_sheet_name = f"module_event_{module['module_event_no']}_func_event_{frow}"
@@ -494,7 +496,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
 
                     func_sheet.write_url(frow, len(func_headers) - 1,
                                          f"internal:'{event_sheet_name}'!A1",
-                                         string=f"line_events of func_event_{frow}")
+                                         string=f"line_events")
 
                     for ecol, eh in enumerate(event_headers):
                         event_sheet.write(0, ecol, eh)
@@ -503,11 +505,11 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
                         # erow_format = highlight_cell_format if this_context_event else regular_cell_format
 
                         if this_context_event and event["unique_to_this_feature"]:
-                            erow_format = highlight_cell_format_2
+                            erow_format = highlight_cell_format_shine
                         elif not this_context_event and not event["unique_to_this_feature"]:
                             erow_format = regular_cell_format
                         else:
-                            erow_format = highlight_cell_format_1
+                            erow_format = highlight_cell_format_pale
 
                         for ecol, eh in enumerate(event_headers):
                             if eh == f"within_func_event_{frow}":
@@ -523,18 +525,20 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
                     last_col = event_sheet.dim_colmax if hasattr(event_sheet, 'dim_colmax') and event_sheet.dim_colmax is not None else 0
                     last_row = event_sheet.dim_rowmax if hasattr(event_sheet, 'dim_rowmax') and event_sheet.dim_rowmax is not None else 0
                     # 在最后一列右侧第一个单元格添加超链接
-                    event_sheet.write_url(2, last_col + 3, f"internal:'{sheet_name}'!A1", string=f"back to function granularity")
+                    event_sheet.write_url(2, last_col + 1, f"internal:'{sheet_name}'!A1", string=f"back to function granularity")
                     event_sheet.write_url(last_row + 2, 0, f"internal:'{sheet_name}'!A1", string=f"back to function granularity")
                 else:
                     func_sheet.write(frow, len(func_headers) - 1, "-")
         
         print("cleaning up workbooks...")
         for worksheet in workbook.worksheets():
+            default_width = 25
+            worksheet.set_column('A:XFD', default_width)
             # 获取当前工作表的数据行数和列数
             last_row = worksheet.dim_rowmax if hasattr(worksheet, 'dim_rowmax') and worksheet.dim_rowmax is not None else 1
             last_col = worksheet.dim_colmax if hasattr(worksheet, 'dim_colmax') and worksheet.dim_colmax is not None else 0
             # 在最后一列右侧第一个单元格添加超链接
-            worksheet.write_url(1, (last_col if len(worksheet.name) >= 22 else last_col + 3), "internal:'module_granularity'!A1", string="back to module granularity")
+            worksheet.write_url(1, (last_col if len(worksheet.name) >= 22 else last_col + 1), "internal:'module_granularity'!A1", string="back to module granularity")
             worksheet.write_url((last_row + 1 if len(worksheet.name) >= 22 else last_row + 2), 0, "internal:'module_granularity'!A1", string="back to module granularity")
 
         workbook.close()
@@ -569,6 +573,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
     print(f"length of events1: {len(events1)}")
 
     return None, None
+
 def compare_dependency(dep1, dep2, output_path, output_name="compare_dependency_result.xlsx"):
     """
     比较两个 VarTracer.dep_tree_json 生成的依赖树（JSON 格式），
