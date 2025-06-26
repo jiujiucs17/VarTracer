@@ -437,15 +437,15 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
             module_sheet.write(0, col, h)
 
         for row, module in enumerate(module_event_list, 1):
-            row_format = regular_cell_format
+            mrow_format = regular_cell_format
             if module["unique_to_this_feature"]:
-                row_format = highlight_cell_format_shine
+                mrow_format = highlight_cell_format_shine
 
             for col, key in enumerate(module_headers[:-1]):  # 最后一个字段 "associated_func_events" 不在 module_event_list 中
                 if key == "exec_stack_slice":
-                    module_sheet.write(row, col, f"No. {module['first_event_no']} to {module['last_event_no']} of all exec events", row_format)
+                    module_sheet.write(row, col, f"No. {module['first_event_no']} to {module['last_event_no']} of all exec events", mrow_format)
                 else:
-                    module_sheet.write(row, col, module[key], row_format)
+                    module_sheet.write(row, col, module[key], mrow_format)
 
         # 2. 每个 module_event_n sheet
         for row, module in tqdm(enumerate(module_event_list, 1), desc="Generating module_events & func_events", total=len(module_event_list)):
@@ -471,19 +471,19 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
             for frow, func in enumerate(func_event_list, 1):
                 this_context = func["module_event"] == module["module_event_identifier"]
                 if this_context and func["unique_to_this_feature"]:
-                    row_format = highlight_cell_format_shine
+                    frow_format = highlight_cell_format_shine
                 elif not this_context and not func["unique_to_this_feature"]:
-                    row_format = regular_cell_format
+                    frow_format = regular_cell_format
                 else:
-                    row_format = highlight_cell_format_pale
+                    frow_format = highlight_cell_format_pale
 
                 for col, key in enumerate(func_headers[:-1]):  # 最后一个字段 "associated_line_events" 不在 func_event_list 中
                     if key == f"within_module_event_{row}":
-                        func_sheet.write(frow, col, this_context, row_format)
+                        func_sheet.write(frow, col, this_context, frow_format)
                     elif key == "exec_stack_slice":
-                        func_sheet.write(frow, col, f"No. {func['first_event_no']} to {func['last_event_no']} of all exec events", row_format)
+                        func_sheet.write(frow, col, f"No. {func['first_event_no']} to {func['last_event_no']} of all exec events", frow_format)
                     else:
-                        func_sheet.write(frow, col, func[key] if key in func else "", row_format)
+                        func_sheet.write(frow, col, func[key] if key in func else "", frow_format)
 
                 # 3. 每个 module_event_n_func_event_m sheet
                 if this_context:
