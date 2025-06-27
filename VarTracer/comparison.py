@@ -9,6 +9,8 @@ output_folder = "/Users/zhangmengqi/Desktop/test_case_for_extension"
 print("Comparing execution stacks...")
 exec_stack_json_1_path = output_folder + "/exec_stack" + "/exec_stack_task_3_1.json"
 exec_stack_json_0_path = output_folder + "/exec_stack" + "/exec_stack_task_3_0.json"
+dep_tree_json_1_path = output_folder + "/dependency" + "/dep_tree_task_3_1.json"
+dep_tree_json_0_path = output_folder + "/dependency" + "/dep_tree_task_3_0.json"
 
 # read json file from json document
 with open(exec_stack_json_1_path, 'r', encoding='utf-8') as f:
@@ -17,6 +19,12 @@ with open(exec_stack_json_1_path, 'r', encoding='utf-8') as f:
 with open(exec_stack_json_0_path, 'r', encoding='utf-8') as f:
     exec_stack_json_0 = json.load(f)
 
+# read json file from json document
+with open(dep_tree_json_1_path, 'r', encoding='utf-8') as f:
+    dep_tree_json_1 = json.load(f)
+
+with open(dep_tree_json_0_path, 'r', encoding='utf-8') as f:
+    dep_tree_json_0 = json.load(f)
 # events = break_down_granularity(exec_stack_json_1)
 # # save the events to a txt file
 # with open(output_folder + "/exec_events" + "/events_3_1.txt", 'w', encoding='utf-8') as f:
@@ -25,7 +33,7 @@ with open(exec_stack_json_0_path, 'r', encoding='utf-8') as f:
 
 
 
-compare_exec_stack(exec_stack_json_0, exec_stack_json_1, output_folder)
+compare_exec_stack(exec_stack_json_0, exec_stack_json_1, dep_tree_json_0, dep_tree_json_1, output_folder)
 print("Execution stacks compared and saved to compare_exec_stack_result.xlsx")
 
 

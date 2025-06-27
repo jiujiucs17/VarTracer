@@ -112,7 +112,8 @@ class DependencyTree:
                 func_name = details.get("func", None)
                 file_name = os.path.splitext(os.path.basename(details.get("file_path", "")))[0] if details.get("file_path") else ""
                 # 构建新的作用域链
-                new_scope_chain = scope_chain.copy()
+                # new_scope_chain = scope_chain.copy()
+                new_scope_chain = []
                 if func_name:
                     new_scope_chain.append(func_name)
                 if details.get("file_path") == file_path:

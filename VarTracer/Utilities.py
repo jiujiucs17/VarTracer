@@ -228,13 +228,42 @@ def extension_interface(file_path, print=False):
         #     os.remove(temp_file_path)
         pass
 
-def break_down_granularity(exec_stack):
+def break_down_granularity(exec_stack, dep_tree):
     """
     将 exec_stack（JSON对象）展开为事件列表，并为每个事件添加 module_event 和 function_event 字段。
     每个事件包含如下字段：
       event_no, file_path, event_type, module, call_depth, line_no, line_content, variable, dep. variable,
       module_event, function_event
     """
+    def get_dep_variables(dep_tree, event):
+        assigned_vars = event.get("details", {}).get("assigned_vars", [])
+        if not assigned_vars or len(assigned_vars) == 0:
+            return ""
+
+        dep_var_inline = event.get("details", {}).get("dependencies", [])
+        event_file_path = event.get("details", {}).get("file_path", "")
+        # event_module = event.get("details", {}).get("module", "")
+        # if event_module == "**** top level script ****":
+        #     # 取不含扩展名的文件名作为 module 名称
+        #     event_module = os.path.splitext(os.path.basename(event_file_path))[0]
+        event_module = os.path.splitext(os.path.basename(event_file_path))[0]
+        event_func = event.get("details", {}).get("func", "")
+        text = ""
+        for var in assigned_vars:
+            # 作用域链格式：filename.toplevelscopename.**.parentscopename.varname
+            scoped_var = f"{event_module}.{event_func}.{var}"
+            dependent_vars_json = dep_tree.get(event_file_path, {}).get(scoped_var, {}).get("results", {})
+            dependent_vars = []
+            for dep_var, dep_info in dependent_vars_json.items():
+                    dependent_vars.append(dep_var)
+
+            text_dep_vars = f"{var}: INLINE DEPENDENCIES: "
+            text_dep_vars += f"{', '.join(dep_var_inline)}" if len(dep_var_inline)>0 else ""
+            text_dep_vars += f" *|* FILE DEPENDENCIES: {', '.join(dependent_vars)}" if len(dependent_vars)>0 else ""
+            text += text_dep_vars + " *|||* "
+        
+        return text.strip(" *|||* ")
+
     # 展平 execution_stack
     events = []
     def traverse(stack, event_no_counter):
@@ -244,8 +273,8 @@ def break_down_granularity(exec_stack):
             assigned_vars = details.get("assigned_vars", [])
             variable = assigned_vars[0] if assigned_vars else ""
             # 依赖变量
-            dependencies = details.get("dependencies", [])
-            dep_variable = dependencies[0] if dependencies else ""
+            dep_variable = get_dep_variables(dep_tree, event)
+
             # if module name is "(unknown-module)", use string "top level script" instead
             if details.get("module") == "(unknown-module)":
                 module_name = "**** top level script ****"
@@ -261,7 +290,7 @@ def break_down_granularity(exec_stack):
                 "line_no": details.get("line_no", ""),
                 "line_content": details.get("line_content", ""),
                 "variable": variable,
-                "dep. variable": dep_variable,
+                "dep.variable": dep_variable,
                 # module_event/function_event 暂时空
             })
             event_no_counter[0] += 1
@@ -299,15 +328,15 @@ def break_down_granularity(exec_stack):
 
     return events
 
-def compare_event_lists(exec_stack0, exec_stack1):
+def compare_event_lists(exec_stack0, exec_stack1, dep_tree0, dep_tree1):
     """
     对比两个 exec_stack，分别展开为事件列表，并为每个事件添加 unique_to_this_feature 字段。
     如果某事件仅在 events1 或 events2 中出现，则其 unique_to_this_feature 字段为 True。
     判断标准为 (file_path, line_no, line_content) 三元组完全一致。
     返回 (events1, events2)
     """
-    events0 = break_down_granularity(exec_stack0)
-    events1 = break_down_granularity(exec_stack1)
+    events0 = break_down_granularity(exec_stack0, dep_tree0)
+    events1 = break_down_granularity(exec_stack1, dep_tree1)
 
     def make_event_key(event):
         return (event.get("file_path", ""), str(event.get("line_no", "")), str(event.get("line_content", "")))
@@ -322,7 +351,7 @@ def compare_event_lists(exec_stack0, exec_stack1):
 
     return events0, events1
 
-def compare_exec_stack(exec_stack0, exec_stack1, output_path):
+def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_path):
     """
     对比两个 exec_stack，分别以 module granularity、function granularity、event granularity 展示。
     输出为 xlsx 文件，包含多个 sheet：
@@ -334,7 +363,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
     """
 
     # 1. 生成 events0, events1
-    events0, events1 = compare_event_lists(exec_stack0, exec_stack1)
+    events0, events1 = compare_event_lists(exec_stack0, exec_stack1, dep_tree0, dep_tree1)
 
     def build_json(events):
         # 提取所有 func_event
@@ -361,7 +390,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
                     "line_no": lev["line_no"],
                     "line_content": lev["line_content"],
                     "variable": lev["variable"],
-                    "dep.variable": lev["dep. variable"],
+                    "dep.variable": lev["dep.variable"],
                     "unique_to_this_feature": lev["unique_to_this_feature"],
                     "module_event": lev["module_event"],
                     "function_event": fe
@@ -412,21 +441,25 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
             'font_color': '#9C0006',  # 字体颜色
             'border': 1,  # 边框
             'align': 'left', 
-            'valign': 'vcenter'
+            'valign': 'vcenter',
+            'align': 'center'
         })
         highlight_cell_format_shine = workbook.add_format({
             'bg_color': "#FFC7CE",    # 背景色
             'font_color': '#9C0006',  # 字体颜色
             'border': 1,  # 边框
             'align': 'left', 
-            'valign': 'vcenter'
+            'valign': 'vcenter',
+            'align': 'center'
+
         })
         regular_cell_format = workbook.add_format({
             'bg_color': '#FFFFFF',    # 背景色
             'font_color': '#000000',  # 字体颜色
             'border': 1,  # 边框
             'align': 'left', 
-            'valign': 'vcenter'
+            'valign': 'vcenter',
+            'align': 'center'
         })
         # 1. module_granularity sheet
         module_headers = [
@@ -501,7 +534,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, output_path):
                     for ecol, eh in enumerate(event_headers):
                         event_sheet.write(0, ecol, eh)
                     for erow, event in enumerate(all_line_events, 1):
-                        this_context_event = event["function_event"] == func["func_event_no"]
+                        this_context_event = event["function_event"] == func["func_event_identifier"]
                         # erow_format = highlight_cell_format if this_context_event else regular_cell_format
 
                         if this_context_event and event["unique_to_this_feature"]:

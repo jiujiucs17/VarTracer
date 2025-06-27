@@ -37,7 +37,11 @@ print("Generating execution stack and dependency tree...")
 
 print("Generating execution stack JSON...")
 exec_stack_json_output_path = f"{output_path}/exec_stack"
-vt.exec_stack_json(output_path=exec_stack_json_output_path, output_name="exec_stack_task_3_1.json", show_progress=True)
+vt.exec_stack_json(output_path=exec_stack_json_output_path, output_name="exec_stack_task_5_1.json", show_progress=True)
+
+print("Generating dependency tree JSON...")
+dependency_output_path = f"{output_path}/dependency"
+vt.dep_tree_json(output_path=dependency_output_path, output_name="dep_tree_task_5_1.json")
 
 print("Execution stack JSON generated")
 # -------------- VarTracer related code --------------
