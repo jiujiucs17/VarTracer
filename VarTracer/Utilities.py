@@ -259,10 +259,10 @@ def break_down_granularity(exec_stack, dep_tree):
 
             text_dep_vars = f"{var}: INLINE DEPENDENCIES: "
             text_dep_vars += f"{', '.join(dep_var_inline)}" if len(dep_var_inline)>0 else ""
-            text_dep_vars += f" *|* FILE DEPENDENCIES: {', '.join(dependent_vars)}" if len(dependent_vars)>0 else ""
-            text += text_dep_vars + " *|||* "
+            text_dep_vars += f" ｜*|*｜ FILE DEPENDENCIES: {', '.join(dependent_vars)}" if len(dependent_vars)>0 else ""
+            text += text_dep_vars + " ｜*|*|*｜ "
         
-        return text.strip(" *|||* ")
+        return text.strip(" ｜*|*|*｜ ")
 
     # 展平 execution_stack
     events = []
@@ -461,6 +461,13 @@ def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_pa
             'valign': 'vcenter',
             'align': 'center'
         })
+        hyperlink_format = workbook.add_format({
+            'font_color': '#0000FF',  # 超链接字体颜色
+            'underline': 1,           # 下划线
+            'align': 'left', 
+            'valign': 'vcenter',
+            'align': 'center'
+        })
         # 1. module_granularity sheet
         module_headers = [
             "module_event_no", "module_event_identifier", "module_name", "exec_stack_slice", "unique_to_this_feature", "associated_func_events" 
@@ -558,21 +565,24 @@ def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_pa
                     last_col = event_sheet.dim_colmax if hasattr(event_sheet, 'dim_colmax') and event_sheet.dim_colmax is not None else 0
                     last_row = event_sheet.dim_rowmax if hasattr(event_sheet, 'dim_rowmax') and event_sheet.dim_rowmax is not None else 0
                     # 在最后一列右侧第一个单元格添加超链接
-                    event_sheet.write_url(2, last_col + 1, f"internal:'{sheet_name}'!A1", string=f"back to function granularity")
-                    event_sheet.write_url(last_row + 2, 0, f"internal:'{sheet_name}'!A1", string=f"back to function granularity")
+                    event_sheet.write_url(0, last_col + 2, f"internal:'{sheet_name}'!A1", cell_format=hyperlink_format, string=f"back to function granularity")
+                    event_sheet.write_url(last_row + 2, 0, f"internal:'{sheet_name}'!A1", cell_format=hyperlink_format, string=f"back to function granularity")
                 else:
                     func_sheet.write(frow, len(func_headers) - 1, "-")
         
         print("cleaning up workbooks...")
         for worksheet in workbook.worksheets():
+            # 设置冻结窗格
+            worksheet.freeze_panes(1, 0)
+            # 设置默认列宽
             default_width = 25
             worksheet.set_column('A:XFD', default_width)
             # 获取当前工作表的数据行数和列数
             last_row = worksheet.dim_rowmax if hasattr(worksheet, 'dim_rowmax') and worksheet.dim_rowmax is not None else 1
             last_col = worksheet.dim_colmax if hasattr(worksheet, 'dim_colmax') and worksheet.dim_colmax is not None else 0
             # 在最后一列右侧第一个单元格添加超链接
-            worksheet.write_url(1, (last_col if len(worksheet.name) >= 22 else last_col + 1), "internal:'module_granularity'!A1", string="back to module granularity")
-            worksheet.write_url((last_row + 1 if len(worksheet.name) >= 22 else last_row + 2), 0, "internal:'module_granularity'!A1", string="back to module granularity")
+            worksheet.write_url(0, (last_col - 1 if len(worksheet.name) >= 22 else last_col + 1), "internal:'module_granularity'!A1", cell_format=hyperlink_format, string="back to module granularity")
+            worksheet.write_url((last_row + 1 if len(worksheet.name) >= 22 else last_row + 2), 0, "internal:'module_granularity'!A1", cell_format=hyperlink_format, string="back to module granularity")
 
         workbook.close()
 
