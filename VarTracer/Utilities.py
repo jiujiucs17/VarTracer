@@ -466,11 +466,11 @@ def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_pa
             'underline': 1,           # 下划线
             'align': 'left', 
             'valign': 'vcenter',
-            'align': 'center'
+            'align': 'left'
         })
         # 1. module_granularity sheet
         module_headers = [
-            "module_event_no", "module_event_identifier", "module_name", "exec_stack_slice", "unique_to_this_feature", "associated_func_events" 
+            "module_event_no", "module_name", "execution_sequence_slice", "unique_to_this_feature", "associated_func_events" 
         ]
         module_sheet = workbook.add_worksheet("module_granularity")
         for col, h in enumerate(module_headers):
@@ -482,7 +482,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_pa
                 mrow_format = highlight_cell_format_shine
 
             for col, key in enumerate(module_headers[:-1]):  # 最后一个字段 "associated_func_events" 不在 module_event_list 中
-                if key == "exec_stack_slice":
+                if key == "execution_sequence_slice":
                     module_sheet.write(row, col, f"No. {module['first_event_no']} to {module['last_event_no']} of all exec events", mrow_format)
                 else:
                     module_sheet.write(row, col, module[key], mrow_format)
@@ -490,7 +490,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_pa
         # 2. 每个 module_event_n sheet
         for row, module in tqdm(enumerate(module_event_list, 1), desc="Generating module_events & func_events", total=len(module_event_list)):
             func_headers = [
-            "func_event_no", "func_event_identifier", "func_name", "file_path", "module_event", "exec_stack_slice", "unique_to_this_feature", f"within_module_event_{row}", "associated_line_events"
+            "func_event_no", "func_name", "file_path", "module_event_no", "execution_sequence_slice", "unique_to_this_feature", f"within_module_event_{row}", "associated_line_events"
         ]
 
             sheet_name = f"module_event_{module['module_event_no']}"
@@ -512,23 +512,27 @@ def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_pa
                 this_context = func["module_event"] == module["module_event_identifier"]
                 if this_context and func["unique_to_this_feature"]:
                     frow_format = highlight_cell_format_shine
-                elif not this_context and not func["unique_to_this_feature"]:
-                    frow_format = regular_cell_format
-                else:
+                elif not this_context and func["unique_to_this_feature"]:
                     frow_format = highlight_cell_format_pale
+                else:
+                    frow_format = regular_cell_format
 
                 for col, key in enumerate(func_headers[:-1]):  # 最后一个字段 "associated_line_events" 不在 func_event_list 中
                     if key == f"within_module_event_{row}":
                         func_sheet.write(frow, col, this_context, frow_format)
-                    elif key == "exec_stack_slice":
+                    elif key == "execution_sequence_slice":
                         func_sheet.write(frow, col, f"No. {func['first_event_no']} to {func['last_event_no']} of all exec events", frow_format)
+                    elif key == "module_event_no":
+                        # 查询 identifier为 module_event 的 module_event_no
+                        module_event_no = next((me["module_event_no"] for me in module_event_list if me["module_event_identifier"] == func["module_event"]), None)
+                        func_sheet.write(frow, col, module_event_no, frow_format)
                     else:
                         func_sheet.write(frow, col, func[key] if key in func else "", frow_format)
 
                 # 3. 每个 module_event_n_func_event_m sheet
                 if this_context:
                     event_headers = [
-                        "event_no", "event_type", "call_depth", "file_path", "module_event", "function_event", "line_no",
+                        "event_no", "event_type", "call_depth", "file_path", "module_event_no", "function_event_no", "line_no",
                         "line_content", "variable", "dep.variable", "unique_to_this_feature", f"within_func_event_{frow}"
                     ]
                     event_sheet_name = f"module_event_{module['module_event_no']}_func_event_{frow}"
@@ -546,14 +550,22 @@ def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_pa
 
                         if this_context_event and event["unique_to_this_feature"]:
                             erow_format = highlight_cell_format_shine
-                        elif not this_context_event and not event["unique_to_this_feature"]:
-                            erow_format = regular_cell_format
-                        else:
+                        elif not this_context_event and event["unique_to_this_feature"]:
                             erow_format = highlight_cell_format_pale
+                        else:
+                            erow_format = regular_cell_format
 
                         for ecol, eh in enumerate(event_headers):
                             if eh == f"within_func_event_{frow}":
                                 event_sheet.write(erow, ecol, this_context_event, erow_format)
+                            elif eh == "module_event_no":
+                                # 查询 identifier为 module_event 的 module_event_no
+                                module_event_no = next((me["module_event_no"] for me in module_event_list if me["module_event_identifier"] == event["module_event"]), None)
+                                event_sheet.write(erow, ecol, module_event_no, erow_format)
+                            elif eh == "function_event_no":
+                                # 查询 identifier为 func_event 的 func_event_no
+                                func_event_no = next((fe["func_event_no"] for fe in func_event_list if fe["func_event_identifier"] == event["function_event"]), None)
+                                event_sheet.write(erow, ecol, func_event_no, erow_format)
                             else:
                                 value = "-"
                                 if eh in event:
