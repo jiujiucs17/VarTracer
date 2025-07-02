@@ -237,32 +237,29 @@ def break_down_granularity(exec_stack, dep_tree):
     """
     def get_dep_variables(dep_tree, event):
         assigned_vars = event.get("details", {}).get("assigned_vars", [])
-        if not assigned_vars or len(assigned_vars) == 0:
-            return ""
-
         dep_var_inline = event.get("details", {}).get("dependencies", [])
         event_file_path = event.get("details", {}).get("file_path", "")
-        # event_module = event.get("details", {}).get("module", "")
-        # if event_module == "**** top level script ****":
-        #     # 取不含扩展名的文件名作为 module 名称
-        #     event_module = os.path.splitext(os.path.basename(event_file_path))[0]
+
         event_module = os.path.splitext(os.path.basename(event_file_path))[0]
         event_func = event.get("details", {}).get("func", "")
         text = ""
-        for var in assigned_vars:
-            # 作用域链格式：filename.toplevelscopename.**.parentscopename.varname
-            scoped_var = f"{event_module}.{event_func}.{var}"
-            dependent_vars_json = dep_tree.get(event_file_path, {}).get(scoped_var, {}).get("results", {})
-            dependent_vars = []
-            for dep_var, dep_info in dependent_vars_json.items():
-                    dependent_vars.append(dep_var)
+        if not assigned_vars or len(assigned_vars) == 0:
+            return ""
+        else:
+            for var in assigned_vars:
+                # 作用域链格式：filename.toplevelscopename.**.parentscopename.varname
+                scoped_var = f"{event_module}.{event_func}.{var}"
+                dependent_vars_json = dep_tree.get(event_file_path, {}).get(scoped_var, {}).get("results", {})
+                dependent_vars = []
+                for dep_var, dep_info in dependent_vars_json.items():
+                        dependent_vars.append(dep_var)
 
-            text_dep_vars = f"{var}: INLINE DEPENDENCIES: "
-            text_dep_vars += f"{', '.join(dep_var_inline)}" if len(dep_var_inline)>0 else ""
-            text_dep_vars += f" ｜*|*｜ FILE DEPENDENCIES: {', '.join(dependent_vars)}" if len(dependent_vars)>0 else ""
-            text += text_dep_vars + " ｜*|*|*｜ "
-        
-        return text.strip(" ｜*|*|*｜ ")
+                text_dep_vars = f"{var}: INLINE DEPENDENCIES: "
+                text_dep_vars += f"{', '.join(dep_var_inline)}" if len(dep_var_inline)>0 else "NONE"
+                text_dep_vars += f" ｜-|-｜ ALL DEPENDENCIES (within file): {', '.join(dependent_vars)}" if len(dependent_vars)>0 else "NONE"
+                text += text_dep_vars + " ｜-|-|-｜ "
+            
+            return text.strip(" ｜-|-|-｜ ")
 
     # 展平 execution_stack
     events = []

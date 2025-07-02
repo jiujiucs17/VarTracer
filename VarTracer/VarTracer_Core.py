@@ -624,8 +624,8 @@ class VarTracer:
                 if self.exec_stack is None:
                     self.exec_stack_json(output_path=None, show_progress=show_progress)
                 # 构建依赖树
-                dep_tree = DependencyTree(call_stack=json.dumps(self.exec_stack))
-                self.dep_tree = dep_tree.parse_dependency()
+                dep_tree_parser = DependencyTree(call_stack=json.dumps(self.exec_stack))
+                self.dep_tree = dep_tree_parser.parse_dependency()
 
             # 输出到文件
             if output_path:

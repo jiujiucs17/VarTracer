@@ -1,7 +1,5 @@
 from VarTracer_Core import *
 import json
-import os
-from openpyxl import Workbook  # 新增
 
 output_folder = "/Users/zhangmengqi/Desktop/test_case_for_extension"
 
@@ -25,31 +23,14 @@ with open(dep_tree_json_1_path, 'r', encoding='utf-8') as f:
 
 with open(dep_tree_json_0_path, 'r', encoding='utf-8') as f:
     dep_tree_json_0 = json.load(f)
-# events = break_down_granularity(exec_stack_json_1)
-# # save the events to a txt file
-# with open(output_folder + "/exec_events" + "/events_3_1.txt", 'w', encoding='utf-8') as f:
-#     for event in events:
-#         f.write(f"{event}\n")
 
-
-
-compare_exec_stack(exec_stack_json_0, exec_stack_json_1, dep_tree_json_0, dep_tree_json_1, output_folder)
+compare_exec_stack(exec_stack_json_0, 
+                   exec_stack_json_1, 
+                   dep_tree_json_0, 
+                   dep_tree_json_1, 
+                   output_folder)
 print("Execution stacks compared and saved to compare_exec_stack_result.xlsx")
 
 
 
 
-# # comapre dependencies
-# print("Comparing dependencies...")
-# dependency_tree_1_path = output_folder + "/dependency" + "/dep_tree_task_2_1.json"
-# dependency_tree_0_path = output_folder + "/dependency" + "/dep_tree_task_2_0.json"
-
-# # read xlsx file from xlsx document
-# with open(dependency_tree_1_path, 'r', encoding='utf-8') as f:
-#     dependency_tree_1 = json.load(f)
-
-# with open(dependency_tree_0_path, 'r', encoding='utf-8') as f:
-#     dependency_tree_0 = json.load(f)
-
-# compare_dependency(dependency_tree_0, dependency_tree_1, output_folder, "compare_dependency_tree_result.xlsx")
-# print("Dependencies compared and saved to compare_dependency_tree_result.xlsx")
