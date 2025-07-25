@@ -25,7 +25,7 @@ print("Output with linear:", y)
 
 # -------------- VarTracer related code --------------
 vt.stop()
-output_path = '/Users/zhangmengqi/Desktop/test_case_for_extension'
+output_path = '/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Pilot_Study_1'
 print("Generating execution stack and dependency tree...")
 # vt.exec_stack_txt(output_path)
 # print("Execution stack generated")
