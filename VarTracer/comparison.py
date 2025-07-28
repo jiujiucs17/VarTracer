@@ -1,14 +1,17 @@
 from VarTracer_Core import *
 import json
 
-output_folder = '/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Pilot_Study_1'
+# output_folder = '/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Pilot_Study_1'
+# output_folder = '/Users/zhangmengqi/Desktop/test_case_for_extension'
+output_folder = '/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/task_design_tests'
+
 
 # compare execution stacks
 print("Comparing execution stacks...")
-exec_stack_json_1_path = output_folder + "/exec_stack" + "/exec_stack_task_3_1.json"
-exec_stack_json_0_path = output_folder + "/exec_stack" + "/exec_stack_task_3_0.json"
-dep_tree_json_1_path = output_folder + "/dependency" + "/dep_tree_task_3_1.json"
-dep_tree_json_0_path = output_folder + "/dependency" + "/dep_tree_task_3_0.json"
+exec_stack_json_1_path = output_folder + "/exec_stack" + "/exec_stack_task_7_1.json"
+exec_stack_json_0_path = output_folder + "/exec_stack" + "/exec_stack_task_7_0.json"
+dep_tree_json_1_path = output_folder + "/dependency" + "/dep_tree_task_7_1.json"
+dep_tree_json_0_path = output_folder + "/dependency" + "/dep_tree_task_7_0.json"
 
 # read json file from json document
 with open(exec_stack_json_1_path, 'r', encoding='utf-8') as f:

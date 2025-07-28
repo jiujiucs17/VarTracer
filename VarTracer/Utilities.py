@@ -6,6 +6,8 @@ import xlsxwriter
 from tqdm import tqdm
 from datetime import datetime
 import openpyxl
+from openpyxl.comments import Comment
+import re
 
 def safe_serialize(obj):
         """将对象转换为字符串表示"""
@@ -615,6 +617,18 @@ def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_pa
                 # 设置筛选
                 ws.auto_filter.ref = ws.dimensions
                 ws.auto_filter.add_filter_column(this_context_col - 1, ["True"])
+            # 从左向右遍历第一行的单元格，遇到最后一个有内容的单元格时停止。使用每个单元格的内容作为键，来查询它们在label_meanings中的含义，并作为这个单元格的comment, 对于在label_meanings中没有的键，则comment为空字符串。
+            for col in range(1, ws.max_column + 1):
+                cell_value = ws.cell(row=1, column=col).value
+                cell_value = re.sub(r"\d+", "", cell_value)
+                cell_comment_string = ""
+                if cell_value in label_meanings:
+                    cell_comment_string = label_meanings[cell_value]
+                cell_comment = Comment(cell_comment_string, "Label Meaning")
+                cell_comment.width = 200
+                cell_comment.height = 100
+                ws.cell(row=1, column=col).comment = cell_comment
+
         wb.save(os.path.join(output_path, filename))
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -733,3 +747,33 @@ def compare_dependency(dep1, dep2, output_path, output_name="compare_dependency_
     write_sheet("Only_in_B", data_B)
     workbook.close()
     return output_xlsx
+
+
+label_meanings = {
+    "module_event_no": "Module Event number in the entire Execution Stack, representing the order of Module Events being executed.",
+    "module_name": "Name of the module where the event occurred.",
+    "execution_sequence_slice": "Slice of the execution sequence, indicating the range of Line Event numbers contained by this Event.",
+    "unique_to_this_feature": "Indicates whether this Event only showed up in the script with this feature enabled.",
+    "associated_func_events": "Hyperlink to the Function Event sheet, which shows all Function Events associated with this Module Event.",
+
+    "func_event_no": "Function Event number in the entire Execution Stack, representing the order of Function Events being executed.",
+    "func_name": "Name of the Function where the event occurred.",
+    "file_path": "File path where the event occurred.",
+    "within_module_event_": "Indicates whether this Function Event is within the context of the Module Event identified by the label.",
+    "associated_line_events": "Hyperlink to the Line Event sheet, which shows all Line Events associated with this Function Event.",
+
+    "event_no": "Event number in the entire Execution Stack, representing the order of Line Events being executed.",
+    "event_type": "Type of the event, one of the following: 'LINE', 'CALL', 'RETURN', 'EXCEPTION'.",
+    "call_depth": "Call depth of the event, indicating how deep the call stack is at this point.",
+    "module_event_no": "Module Event number associated with this Line Event, conceptually linking it to the Module Event sheet.",
+    "function_event_no": "Function Event number associated with this Line Event, conceptually linking it to the Function Event sheet.",
+    "line_no": "Line number in the python file where the Line Event occurred.",
+    "line_content": "Code content of the Line Event.",
+    "variable": "Variable being modified or assigned value to with this Line Event, if any.",
+    # considering changing the dep.variable meaning to "variables whose value **this line** depends on, blabla"
+    "dep.variable": "Variables whose value the variable in the left depends on, showing inline dependencies and all dependencies within the file.",
+    "within_func_event_": "Indicates whether this Line Event is within the context of the Function Event identified by the label.",
+
+    "back to module granularity": "Hyperlink to the Module Granularity sheet, which shows all Module Events.",
+    "back to function granularity": "Hyperlink to the Function Granularity sheet, which shows all Function Events. While highlighting the current context.",
+}
