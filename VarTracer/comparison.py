@@ -3,7 +3,8 @@ import json
 
 # output_folder = '/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Pilot_Study_1'
 # output_folder = '/Users/zhangmengqi/Desktop/test_case_for_extension'
-output_folder = '/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/task_design_tests'
+# output_folder = '/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/task_design_tests'
+output_folder = '/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Pilot_Study_2'
 
 
 # compare execution stacks
