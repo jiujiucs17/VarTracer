@@ -597,26 +597,28 @@ def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_pa
 
         workbook.close()
 
-        # 用 openpyxl 设置筛选条件
+        # 用 openpyxl 设置xlsx文件的展示细节
         wb = openpyxl.load_workbook(os.path.join(output_path, filename))
         for ws in wb.worksheets:
-            if ws.title == "module_granularity":
-                for col in range(1, ws.max_column + 1):
-                    if ws.cell(row=1, column=col).value == "unique_to_this_feature":
-                        unique_to_this_feature_col = col
-                        break
+            # 设置filter
+            ws.auto_filter.ref = ws.dimensions
+            # if ws.title == "module_granularity":
+            #     # for col in range(1, ws.max_column + 1):
+            #     #     if ws.cell(row=1, column=col).value == "unique_to_this_feature":
+            #     #         unique_to_this_feature_col = col
+            #     #         break
 
-                ws.auto_filter.ref = ws.dimensions
-                ws.auto_filter.add_filter_column(unique_to_this_feature_col - 1, ["True"])
-            else:
-                # 找到 this_context 列
-                for col in range(1, ws.max_column + 1):
-                    if ws.cell(row=1, column=col).value.startswith("within_"):
-                        this_context_col = col
-                        break
-                # 设置筛选
-                ws.auto_filter.ref = ws.dimensions
-                ws.auto_filter.add_filter_column(this_context_col - 1, ["True"])
+            #     ws.auto_filter.ref = ws.dimensions
+            #     ws.auto_filter.add_filter_column(unique_to_this_feature_col - 1, ["True"])
+            # else:
+            #     # 找到 this_context 列
+            #     for col in range(1, ws.max_column + 1):
+            #         if ws.cell(row=1, column=col).value.startswith("within_"):
+            #             this_context_col = col
+            #             break
+            #     # 设置筛选
+            #     ws.auto_filter.ref = ws.dimensions
+            #     ws.auto_filter.add_filter_column(this_context_col - 1, ["True"])
             # 从左向右遍历第一行的单元格，遇到最后一个有内容的单元格时停止。使用每个单元格的内容作为键，来查询它们在label_meanings中的含义，并作为这个单元格的comment, 对于在label_meanings中没有的键，则comment为空字符串。
             for col in range(1, ws.max_column + 1):
                 cell_value = ws.cell(row=1, column=col).value
