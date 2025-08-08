@@ -1,5 +1,7 @@
 import mindspore
 from mindspore import nn
+from mindspore import context
+import mindspore.numpy as mnp
 
 # -------------- VarTracer related code --------------
 from VarTracer_Core import *
@@ -7,6 +9,7 @@ import json
 vt = VarTracer()
 vt.start()
 # -------------- VarTracer related code --------------
+
 
 class Network(nn.Cell):
     def __init__(self):
@@ -16,7 +19,7 @@ class Network(nn.Cell):
     def construct(self, x):
         x = self.relu(x)
         return x
-
+    
 model = Network()
 x = mindspore.Tensor(mindspore.numpy.randn(1, 512), mindspore.float32)
 y = model(x)
@@ -35,11 +38,11 @@ print("Generating execution stack and dependency tree...")
 
 print("Generating execution stack JSON...")
 exec_stack_json_output_path = f"{output_path}/exec_stack"
-vt.exec_stack_json(output_path=exec_stack_json_output_path, output_name="exec_stack_task_8_1.json", show_progress=True)
+vt.exec_stack_json(output_path=exec_stack_json_output_path, output_name="exec_stack_task_9_0.json", show_progress=True)
 
 print("Generating dependency tree JSON...")
 dependency_output_path = f"{output_path}/dependency"
-vt.dep_tree_json(output_path=dependency_output_path, output_name="dep_tree_task_8_1.json")
+vt.dep_tree_json(output_path=dependency_output_path, output_name="dep_tree_task_9_0.json")
 
 print("Execution stack JSON and dependency tree JSON generated")
 # -------------- VarTracer related code --------------

@@ -1,7 +1,5 @@
 import mindspore
 from mindspore import nn
-from mindspore.dataset import vision, transforms
-from mindspore.dataset import MnistDataset
 
 # -------------- VarTracer related code --------------
 from VarTracer_Core import *
