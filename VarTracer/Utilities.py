@@ -258,7 +258,8 @@ def break_down_granularity(exec_stack, dep_tree):
 
                 text_dep_vars = f"{var}: INLINE DEPENDENCIES: "
                 text_dep_vars += f"{', '.join(dep_var_inline)}" if len(dep_var_inline)>0 else "NONE"
-                text_dep_vars += f" ｜-|-｜ ALL DEPENDENCIES (within file): {', '.join(dependent_vars)}" if len(dependent_vars)>0 else "NONE"
+                text_dep_vars += f" ｜-|-｜ ALL DEPENDENCIES (within file): "
+                text_dep_vars += f"{', '.join(dependent_vars)}" if len(dependent_vars)>0 else "NONE"
                 text += text_dep_vars + " ｜-|-|-｜ "
             
             return text.strip(" ｜-|-|-｜ ")
@@ -492,7 +493,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_pa
             "func_event_no", "func_name", "file_path", "module_event_no", "execution_sequence_slice", "unique_to_this_feature", f"within_module_event_{row}", "associated_line_events"
         ]
 
-            sheet_name = f"module_event_{module['module_event_no']}"
+            sheet_name = f"m_evt_{module['module_event_no']}"
             func_sheet = workbook.add_worksheet(sheet_name)
 
             if len(func_event_list) == 0:
@@ -534,7 +535,7 @@ def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_pa
                         "event_no", "event_type", "call_depth", "file_path", "module_event_no", "function_event_no", "line_no",
                         "line_content", "variable", "dep.variable", "unique_to_this_feature", f"within_func_event_{frow}"
                     ]
-                    event_sheet_name = f"module_event_{module['module_event_no']}_func_event_{frow}"
+                    event_sheet_name = f"m_evt_{module['module_event_no']}_f_evt_{frow}"
                     event_sheet = workbook.add_worksheet(event_sheet_name)
 
                     func_sheet.write_url(frow, len(func_headers) - 1,
@@ -622,6 +623,8 @@ def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_pa
             # 从左向右遍历第一行的单元格，遇到最后一个有内容的单元格时停止。使用每个单元格的内容作为键，来查询它们在label_meanings中的含义，并作为这个单元格的comment, 对于在label_meanings中没有的键，则comment为空字符串。
             for col in range(1, ws.max_column + 1):
                 cell_value = ws.cell(row=1, column=col).value
+                if cell_value is None:
+                    continue
                 cell_value = re.sub(r"\d+", "", cell_value)
                 cell_comment_string = ""
                 if cell_value in label_meanings:
