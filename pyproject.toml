@@ -19,5 +19,9 @@ classifiers = [
 ]
 urls = { "Homepage" = "https://github.com/jiujiucs17/VarTracer" }
 
+dependencies = [
+    "tqdm",
+]
+
 [tool.setuptools.packages.find]
 include = ["VarTracer", "VarTracer.*"]
