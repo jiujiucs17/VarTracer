@@ -21,6 +21,8 @@ urls = { "Homepage" = "https://github.com/jiujiucs17/VarTracer" }
 
 dependencies = [
     "tqdm",
+    "xlsxwriter",
+    "openpyxl",
 ]
 
 [tool.setuptools.packages.find]

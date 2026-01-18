@@ -1,4 +1,4 @@
-Metadata-Version: 2.4
+Metadata-Version: 2.1
 Name: VarTracer
 Version: 0.1.32
 Summary: A Python-based tool for dynamic code execution tracing and dependency analysis.
@@ -13,9 +13,8 @@ Classifier: Operating System :: OS Independent
 Requires-Python: >=3.7
 Description-Content-Type: text/markdown
 Requires-Dist: tqdm
-Dynamic: author
-Dynamic: home-page
-Dynamic: requires-python
+Requires-Dist: xlsxwriter
+Requires-Dist: openpyxl
 
 # VarTracer
 
