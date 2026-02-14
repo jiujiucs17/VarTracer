@@ -1,0 +1,296 @@
+{
+    "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/VarTracer/VarTracer_Core.py": {},
+    "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py": {
+        "bug_repro.test_dependencies.a": {
+            "variableName": "a",
+            "lineNumber": "14",
+            "results": {}
+        },
+        "bug_repro.test_dependencies.res": {
+            "variableName": "res",
+            "lineNumber": "22",
+            "results": {
+                "a": {
+                    "first_occurrence": "14",
+                    "co_occurrences": [
+                        "22"
+                    ]
+                },
+                "inner_func": {
+                    "first_occurrence": "22",
+                    "co_occurrences": [
+                        "22"
+                    ]
+                }
+            }
+        },
+        "bug_repro.inner_func.y": {
+            "variableName": "y",
+            "lineNumber": "19",
+            "results": {
+                "x": {
+                    "first_occurrence": "19",
+                    "co_occurrences": [
+                        "19"
+                    ]
+                }
+            }
+        },
+        "bug_repro.test_dependencies.c": {
+            "variableName": "c",
+            "lineNumber": "25",
+            "results": {}
+        },
+        "bug_repro.test_dependencies.b": {
+            "variableName": "b",
+            "lineNumber": "25",
+            "results": {}
+        },
+        "bug_repro.test_dependencies.e": {
+            "variableName": "e",
+            "lineNumber": "26",
+            "results": {
+                "c": {
+                    "first_occurrence": "25",
+                    "co_occurrences": [
+                        "26"
+                    ]
+                },
+                "b": {
+                    "first_occurrence": "25",
+                    "co_occurrences": [
+                        "26"
+                    ]
+                }
+            }
+        },
+        "bug_repro.test_dependencies.d": {
+            "variableName": "d",
+            "lineNumber": "26",
+            "results": {
+                "c": {
+                    "first_occurrence": "25",
+                    "co_occurrences": [
+                        "26"
+                    ]
+                },
+                "b": {
+                    "first_occurrence": "25",
+                    "co_occurrences": [
+                        "26"
+                    ]
+                }
+            }
+        },
+        "bug_repro.test_dependencies.lst": {
+            "variableName": "lst",
+            "lineNumber": "29",
+            "results": {
+                "i": {
+                    "first_occurrence": "29",
+                    "co_occurrences": [
+                        "29"
+                    ]
+                },
+                "range": {
+                    "first_occurrence": "29",
+                    "co_occurrences": [
+                        "29"
+                    ]
+                }
+            }
+        },
+        "bug_repro.<listcomp>.lst": {
+            "variableName": "lst",
+            "lineNumber": "29",
+            "results": {
+                "i": {
+                    "first_occurrence": "29",
+                    "co_occurrences": [
+                        "29"
+                    ]
+                },
+                "range": {
+                    "first_occurrence": "29",
+                    "co_occurrences": [
+                        "29"
+                    ]
+                }
+            }
+        },
+        "bug_repro.test_dependencies.lst2": {
+            "variableName": "lst2",
+            "lineNumber": "30",
+            "results": {
+                "lst": {
+                    "first_occurrence": "29",
+                    "co_occurrences": [
+                        "30"
+                    ]
+                },
+                "a": {
+                    "first_occurrence": "14",
+                    "co_occurrences": [
+                        "30"
+                    ]
+                },
+                "x": {
+                    "first_occurrence": "30",
+                    "co_occurrences": [
+                        "30"
+                    ]
+                }
+            }
+        },
+        "bug_repro.<listcomp>.lst2": {
+            "variableName": "lst2",
+            "lineNumber": "30",
+            "results": {
+                "x": {
+                    "first_occurrence": "30",
+                    "co_occurrences": [
+                        "30"
+                    ]
+                },
+                "a": {
+                    "first_occurrence": "14",
+                    "co_occurrences": [
+                        "30"
+                    ]
+                }
+            }
+        },
+        "bug_repro.test_dependencies.f": {
+            "variableName": "f",
+            "lineNumber": "33",
+            "results": {
+                "z": {
+                    "first_occurrence": "33",
+                    "co_occurrences": [
+                        "33"
+                    ]
+                },
+                "a": {
+                    "first_occurrence": "14",
+                    "co_occurrences": [
+                        "33"
+                    ]
+                }
+            }
+        },
+        "bug_repro.test_dependencies.val": {
+            "variableName": "val",
+            "lineNumber": "34",
+            "results": {
+                "f": {
+                    "first_occurrence": "33",
+                    "co_occurrences": [
+                        "34"
+                    ]
+                }
+            }
+        },
+        "bug_repro.<lambda>.f": {
+            "variableName": "f",
+            "lineNumber": "33",
+            "results": {
+                "z": {
+                    "first_occurrence": "33",
+                    "co_occurrences": [
+                        "33"
+                    ]
+                },
+                "a": {
+                    "first_occurrence": "14",
+                    "co_occurrences": [
+                        "33"
+                    ]
+                }
+            }
+        },
+        "bug_repro.test_dependencies.g_val": {
+            "variableName": "g_val",
+            "lineNumber": "39",
+            "results": {
+                "use_global": {
+                    "first_occurrence": "39",
+                    "co_occurrences": [
+                        "39"
+                    ]
+                }
+            }
+        },
+        "bug_repro.test_dependencies.dct": {
+            "variableName": "dct",
+            "lineNumber": "42",
+            "results": {
+                "k": {
+                    "first_occurrence": "42",
+                    "co_occurrences": [
+                        "42"
+                    ]
+                },
+                "range": {
+                    "first_occurrence": "42",
+                    "co_occurrences": [
+                        "42"
+                    ]
+                }
+            }
+        },
+        "bug_repro.<dictcomp>.dct": {
+            "variableName": "dct",
+            "lineNumber": "42",
+            "results": {
+                "k": {
+                    "first_occurrence": "42",
+                    "co_occurrences": [
+                        "42"
+                    ]
+                },
+                "range": {
+                    "first_occurrence": "42",
+                    "co_occurrences": [
+                        "42"
+                    ]
+                }
+            }
+        },
+        "bug_repro.test_dependencies.st": {
+            "variableName": "st",
+            "lineNumber": "45",
+            "results": {
+                "s": {
+                    "first_occurrence": "45",
+                    "co_occurrences": [
+                        "45"
+                    ]
+                },
+                "range": {
+                    "first_occurrence": "45",
+                    "co_occurrences": [
+                        "45"
+                    ]
+                }
+            }
+        },
+        "bug_repro.<setcomp>.st": {
+            "variableName": "st",
+            "lineNumber": "45",
+            "results": {
+                "s": {
+                    "first_occurrence": "45",
+                    "co_occurrences": [
+                        "45"
+                    ]
+                },
+                "range": {
+                    "first_occurrence": "45",
+                    "co_occurrences": [
+                        "45"
+                    ]
+                }
+            }
+        }
+    }
+}

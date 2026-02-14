@@ -1,0 +1,875 @@
+{
+    "trace_started_at": "2026-02-14 18:06:34",
+    "execution_stack": [
+        {
+            "type": "LINE",
+            "details": {
+                "module": "(unknown-module)",
+                "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                "func": "<module>",
+                "depth": 0,
+                "line_no": "57",
+                "line_content": "test_dependencies()",
+                "dependencies": [
+                    "test_dependencies"
+                ],
+                "assigned_vars": []
+            }
+        },
+        {
+            "type": "CALL",
+            "details": {
+                "module": "(unknown-module)",
+                "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                "func": "test_dependencies",
+                "depth": 0,
+                "daughter_stack": [
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "14",
+                            "line_content": "a = 10",
+                            "dependencies": [],
+                            "assigned_vars": [
+                                "a"
+                            ]
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "15",
+                            "line_content": "a += 5  # Dependence on 'a'? -> 'a' should be both assigned and dependency",
+                            "dependencies": [],
+                            "assigned_vars": [
+                                "a"
+                            ]
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "18",
+                            "line_content": "def inner_func(x):",
+                            "dependencies": [],
+                            "assigned_vars": []
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "22",
+                            "line_content": "res = inner_func(a)",
+                            "dependencies": [
+                                "a",
+                                "inner_func"
+                            ],
+                            "assigned_vars": [
+                                "res"
+                            ]
+                        }
+                    },
+                    {
+                        "type": "CALL",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "inner_func",
+                            "depth": 1,
+                            "daughter_stack": [
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "inner_func",
+                                        "depth": 2,
+                                        "line_no": "19",
+                                        "line_content": "y = x + 1",
+                                        "dependencies": [
+                                            "x"
+                                        ],
+                                        "assigned_vars": [
+                                            "y"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "inner_func",
+                                        "depth": 2,
+                                        "line_no": "20",
+                                        "line_content": "return y",
+                                        "dependencies": [
+                                            "y"
+                                        ],
+                                        "assigned_vars": []
+                                    }
+                                },
+                                {
+                                    "type": "RETURN",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "inner_func",
+                                        "depth": 2
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "25",
+                            "line_content": "b, c = 1, 2",
+                            "dependencies": [],
+                            "assigned_vars": [
+                                "c",
+                                "b"
+                            ]
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "26",
+                            "line_content": "d, e = c, b # Depend on c, b. Assign d, e.",
+                            "dependencies": [
+                                "c",
+                                "b"
+                            ],
+                            "assigned_vars": [
+                                "e",
+                                "d"
+                            ]
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "29",
+                            "line_content": "lst = [i for i in range(3)]",
+                            "dependencies": [
+                                "i",
+                                "range"
+                            ],
+                            "assigned_vars": [
+                                "lst"
+                            ]
+                        }
+                    },
+                    {
+                        "type": "CALL",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "<listcomp>",
+                            "depth": 1,
+                            "daughter_stack": [
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<listcomp>",
+                                        "depth": 2,
+                                        "line_no": "29",
+                                        "line_content": "lst = [i for i in range(3)]",
+                                        "dependencies": [
+                                            "i",
+                                            "range"
+                                        ],
+                                        "assigned_vars": [
+                                            "lst"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<listcomp>",
+                                        "depth": 2,
+                                        "line_no": "29",
+                                        "line_content": "lst = [i for i in range(3)]",
+                                        "dependencies": [
+                                            "i",
+                                            "range"
+                                        ],
+                                        "assigned_vars": [
+                                            "lst"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<listcomp>",
+                                        "depth": 2,
+                                        "line_no": "29",
+                                        "line_content": "lst = [i for i in range(3)]",
+                                        "dependencies": [
+                                            "i",
+                                            "range"
+                                        ],
+                                        "assigned_vars": [
+                                            "lst"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<listcomp>",
+                                        "depth": 2,
+                                        "line_no": "29",
+                                        "line_content": "lst = [i for i in range(3)]",
+                                        "dependencies": [
+                                            "i",
+                                            "range"
+                                        ],
+                                        "assigned_vars": [
+                                            "lst"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "RETURN",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<listcomp>",
+                                        "depth": 2
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "30",
+                            "line_content": "lst2 = [x + a for x in lst] # Depend on 'a', 'lst'. Assign 'lst2'. 'x' is local to comp.",
+                            "dependencies": [
+                                "lst",
+                                "a",
+                                "x"
+                            ],
+                            "assigned_vars": [
+                                "lst2"
+                            ]
+                        }
+                    },
+                    {
+                        "type": "CALL",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "<listcomp>",
+                            "depth": 1,
+                            "daughter_stack": [
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<listcomp>",
+                                        "depth": 2,
+                                        "line_no": "30",
+                                        "line_content": "lst2 = [x + a for x in lst] # Depend on 'a', 'lst'. Assign 'lst2'. 'x' is local to comp.",
+                                        "dependencies": [
+                                            "x",
+                                            "a"
+                                        ],
+                                        "assigned_vars": [
+                                            "lst2"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<listcomp>",
+                                        "depth": 2,
+                                        "line_no": "30",
+                                        "line_content": "lst2 = [x + a for x in lst] # Depend on 'a', 'lst'. Assign 'lst2'. 'x' is local to comp.",
+                                        "dependencies": [
+                                            "x",
+                                            "a"
+                                        ],
+                                        "assigned_vars": [
+                                            "lst2"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<listcomp>",
+                                        "depth": 2,
+                                        "line_no": "30",
+                                        "line_content": "lst2 = [x + a for x in lst] # Depend on 'a', 'lst'. Assign 'lst2'. 'x' is local to comp.",
+                                        "dependencies": [
+                                            "x",
+                                            "a"
+                                        ],
+                                        "assigned_vars": [
+                                            "lst2"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<listcomp>",
+                                        "depth": 2,
+                                        "line_no": "30",
+                                        "line_content": "lst2 = [x + a for x in lst] # Depend on 'a', 'lst'. Assign 'lst2'. 'x' is local to comp.",
+                                        "dependencies": [
+                                            "x",
+                                            "a"
+                                        ],
+                                        "assigned_vars": [
+                                            "lst2"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "RETURN",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<listcomp>",
+                                        "depth": 2
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "33",
+                            "line_content": "f = lambda z: z + a",
+                            "dependencies": [
+                                "z",
+                                "a"
+                            ],
+                            "assigned_vars": [
+                                "f"
+                            ]
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "34",
+                            "line_content": "val = f(10) # Depend on 'f', 'a'.",
+                            "dependencies": [
+                                "f"
+                            ],
+                            "assigned_vars": [
+                                "val"
+                            ]
+                        }
+                    },
+                    {
+                        "type": "CALL",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "<lambda>",
+                            "depth": 1,
+                            "daughter_stack": [
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<lambda>",
+                                        "depth": 2,
+                                        "line_no": "33",
+                                        "line_content": "f = lambda z: z + a",
+                                        "dependencies": [
+                                            "z",
+                                            "a"
+                                        ],
+                                        "assigned_vars": [
+                                            "f"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "RETURN",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<lambda>",
+                                        "depth": 2
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "37",
+                            "line_content": "def use_global():",
+                            "dependencies": [],
+                            "assigned_vars": []
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "39",
+                            "line_content": "g_val = use_global()",
+                            "dependencies": [
+                                "use_global"
+                            ],
+                            "assigned_vars": [
+                                "g_val"
+                            ]
+                        }
+                    },
+                    {
+                        "type": "CALL",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "use_global",
+                            "depth": 1,
+                            "daughter_stack": [
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "use_global",
+                                        "depth": 2,
+                                        "line_no": "38",
+                                        "line_content": "return a + 100",
+                                        "dependencies": [
+                                            "a"
+                                        ],
+                                        "assigned_vars": []
+                                    }
+                                },
+                                {
+                                    "type": "RETURN",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "use_global",
+                                        "depth": 2
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "42",
+                            "line_content": "dct = {k: k*2 for k in range(3)}",
+                            "dependencies": [
+                                "k",
+                                "range"
+                            ],
+                            "assigned_vars": [
+                                "dct"
+                            ]
+                        }
+                    },
+                    {
+                        "type": "CALL",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "<dictcomp>",
+                            "depth": 1,
+                            "daughter_stack": [
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<dictcomp>",
+                                        "depth": 2,
+                                        "line_no": "42",
+                                        "line_content": "dct = {k: k*2 for k in range(3)}",
+                                        "dependencies": [
+                                            "k",
+                                            "range"
+                                        ],
+                                        "assigned_vars": [
+                                            "dct"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<dictcomp>",
+                                        "depth": 2,
+                                        "line_no": "42",
+                                        "line_content": "dct = {k: k*2 for k in range(3)}",
+                                        "dependencies": [
+                                            "k",
+                                            "range"
+                                        ],
+                                        "assigned_vars": [
+                                            "dct"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<dictcomp>",
+                                        "depth": 2,
+                                        "line_no": "42",
+                                        "line_content": "dct = {k: k*2 for k in range(3)}",
+                                        "dependencies": [
+                                            "k",
+                                            "range"
+                                        ],
+                                        "assigned_vars": [
+                                            "dct"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<dictcomp>",
+                                        "depth": 2,
+                                        "line_no": "42",
+                                        "line_content": "dct = {k: k*2 for k in range(3)}",
+                                        "dependencies": [
+                                            "k",
+                                            "range"
+                                        ],
+                                        "assigned_vars": [
+                                            "dct"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "RETURN",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<dictcomp>",
+                                        "depth": 2
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "45",
+                            "line_content": "st = {s for s in range(3)}",
+                            "dependencies": [
+                                "s",
+                                "range"
+                            ],
+                            "assigned_vars": [
+                                "st"
+                            ]
+                        }
+                    },
+                    {
+                        "type": "CALL",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "<setcomp>",
+                            "depth": 1,
+                            "daughter_stack": [
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<setcomp>",
+                                        "depth": 2,
+                                        "line_no": "45",
+                                        "line_content": "st = {s for s in range(3)}",
+                                        "dependencies": [
+                                            "s",
+                                            "range"
+                                        ],
+                                        "assigned_vars": [
+                                            "st"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<setcomp>",
+                                        "depth": 2,
+                                        "line_no": "45",
+                                        "line_content": "st = {s for s in range(3)}",
+                                        "dependencies": [
+                                            "s",
+                                            "range"
+                                        ],
+                                        "assigned_vars": [
+                                            "st"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<setcomp>",
+                                        "depth": 2,
+                                        "line_no": "45",
+                                        "line_content": "st = {s for s in range(3)}",
+                                        "dependencies": [
+                                            "s",
+                                            "range"
+                                        ],
+                                        "assigned_vars": [
+                                            "st"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "LINE",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<setcomp>",
+                                        "depth": 2,
+                                        "line_no": "45",
+                                        "line_content": "st = {s for s in range(3)}",
+                                        "dependencies": [
+                                            "s",
+                                            "range"
+                                        ],
+                                        "assigned_vars": [
+                                            "st"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "type": "RETURN",
+                                    "details": {
+                                        "module": "(unknown-module)",
+                                        "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                                        "func": "<setcomp>",
+                                        "depth": 2
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "48",
+                            "line_content": "try:",
+                            "dependencies": [],
+                            "assigned_vars": []
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "49",
+                            "line_content": "1 / 0",
+                            "dependencies": [],
+                            "assigned_vars": []
+                        }
+                    },
+                    {
+                        "type": "EXCEPTION",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "49",
+                            "line_content": "1 / 0",
+                            "exception_type": "ZeroDivisionError",
+                            "exception_value": "division by zero"
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "50",
+                            "line_content": "except ZeroDivisionError as err:",
+                            "dependencies": [],
+                            "assigned_vars": []
+                        }
+                    },
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1,
+                            "line_no": "51",
+                            "line_content": "pass",
+                            "dependencies": [],
+                            "assigned_vars": []
+                        }
+                    },
+                    {
+                        "type": "RETURN",
+                        "details": {
+                            "module": "(unknown-module)",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                            "func": "test_dependencies",
+                            "depth": 1
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "type": "LINE",
+            "details": {
+                "module": "(unknown-module)",
+                "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/bug_repro.py",
+                "func": "<module>",
+                "depth": 0,
+                "line_no": "58",
+                "line_content": "tracer.stop()",
+                "dependencies": [
+                    "tracer",
+                    "tracer.stop"
+                ],
+                "assigned_vars": []
+            }
+        },
+        {
+            "type": "CALL",
+            "details": {
+                "module": "VarTracer.VarTracer_Core",
+                "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/VarTracer/VarTracer_Core.py",
+                "func": "stop",
+                "depth": 0,
+                "daughter_stack": [
+                    {
+                        "type": "LINE",
+                        "details": {
+                            "module": "VarTracer.VarTracer_Core",
+                            "file_path": "/Users/zhangmengqi/Documents/PhD/Working Documents/Deliverable 2/dataflow analysis and tool development/tool evaluation experiment/Empirical_Study_Tasks/VarTracer/VarTracer/VarTracer_Core.py",
+                            "func": "stop",
+                            "depth": 1,
+                            "line_no": "199",
+                            "line_content": "sys.settrace(None)",
+                            "dependencies": [
+                                "sys.settrace",
+                                "sys"
+                            ],
+                            "assigned_vars": []
+                        }
+                    }
+                ]
+            }
+        }
+    ]
+}

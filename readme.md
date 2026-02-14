@@ -1,10 +1,10 @@
 # VarTracer
 
-VarTracer is a Python-based tool designed for dynamic code execution tracing and dependency analysis. It helps developers understand the execution flow, variable dependencies, and function call stacks in their code.
+VarTracer is a Python-based tool designed for dynamic code execution tracing and dependency analysis of Python code. It helps developers understand the execution flow, variable dependencies, and function call stacks in their code.
 
 ## Features
 
-- **Dynamic Tracing**: Tracks code execution using `sys.settrace`.
+- **Dynamic Tracing**: Tracks code execution uutilizing `sys.settrace`.
 - **Dependency Analysis**: Analyzes variable dependencies and assignments using an AST-based parser.
 - **Execution Stack Export**:
   - JSON format (`VTrace_exec_stack.json`)

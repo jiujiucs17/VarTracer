@@ -24,7 +24,7 @@ class FrameSnapshot:
         self.function_name = frame.f_code.co_name
         self.line_no = frame.f_lineno
         self.locals = frame.f_locals.copy()
-        self.globals = {k: safe_serialize(v) for k, v in frame.f_globals.items() if k in frame.f_code.co_names}
+        self.globals = {k: safe_serialize(v) for k, v in list(frame.f_globals.items()) if k in frame.f_code.co_names}
         self.code_context = self._get_code_context(frame)
 
         self.package_name = frame.f_globals.get('__package__', None)
