@@ -1,5 +1,7 @@
 import ast
 import json
+import os
+from collections import defaultdict
 
 class LineDependencyAnalyzer(ast.NodeVisitor):
     def __init__(self, local_vars, global_vars):
@@ -7,17 +9,32 @@ class LineDependencyAnalyzer(ast.NodeVisitor):
         self.global_vars = set(global_vars)
         self.dependencies = set()  # 依赖的变量和函数
         self.assigned_vars = set()  # 被赋值的变量
+        self.shadowed_scopes = []
 
-    def visit_Name(self, node):
-        # 变量名依赖和赋值
-        if isinstance(node.ctx, ast.Load):
-            if node.id in self.local_vars or node.id in self.global_vars:
-                self.dependencies.add(node.id)
-        elif isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.assigned_vars.add(node.id)
+    def _is_shadowed(self, name):
+        return any(name in scope for scope in reversed(self.shadowed_scopes))
 
-    def visit_Attribute(self, node):
-        # 递归处理链式属性 obj.a.b.c
+    def _push_shadowed_scope(self, names=None):
+        self.shadowed_scopes.append(set(names or []))
+
+    def _pop_shadowed_scope(self):
+        if self.shadowed_scopes:
+            self.shadowed_scopes.pop()
+
+    def _collect_target_names(self, node):
+        names = set()
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            for elt in node.elts:
+                names.update(self._collect_target_names(elt))
+        return names
+
+    def _maybe_add_name_dependency(self, name):
+        if not self._is_shadowed(name) and (name in self.local_vars or name in self.global_vars):
+            self.dependencies.add(name)
+
+    def _extract_full_attribute(self, node):
         attr_chain = []
         cur = node
         while isinstance(cur, ast.Attribute):
@@ -25,14 +42,63 @@ class LineDependencyAnalyzer(ast.NodeVisitor):
             cur = cur.value
         if isinstance(cur, ast.Name):
             attr_chain.append(cur.id)
-            full_attr = '.'.join(reversed(attr_chain))
+            return '.'.join(reversed(attr_chain)), cur.id
+        return None, None
+
+    def _extract_call_root_name(self, node):
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            _full_attr, root_name = self._extract_full_attribute(node)
+            return root_name
+        if isinstance(node, ast.Call):
+            return self._extract_call_root_name(node.func)
+        return None
+
+    def _extract_called_attribute(self, func_node):
+        if not isinstance(func_node, ast.Attribute):
+            return None
+        root_name = self._extract_call_root_name(func_node.value)
+        if root_name and not self._is_shadowed(root_name) and (root_name in self.local_vars or root_name in self.global_vars):
+            return f"{root_name}.{func_node.attr}"
+        return None
+
+    def _record_load_from_target(self, target):
+        if isinstance(target, ast.Name):
+            self._maybe_add_name_dependency(target.id)
+        elif isinstance(target, ast.Attribute):
+            full_attr, root_name = self._extract_full_attribute(target)
+            if full_attr and root_name:
+                if not self._is_shadowed(root_name) and (root_name in self.local_vars or root_name in self.global_vars):
+                    self.dependencies.add(full_attr)
+            else:
+                self.visit(target.value)
+        elif isinstance(target, ast.Subscript):
+            self.visit(target.value)
+            self.visit(target.slice)
+            if isinstance(target.value, ast.Name):
+                self._maybe_add_name_dependency(target.value.id)
+        else:
+            self.visit(target)
+
+    def visit_Name(self, node):
+        # 变量名依赖和赋值
+        if isinstance(node.ctx, ast.Load):
+            self._maybe_add_name_dependency(node.id)
+        elif isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.assigned_vars.add(node.id)
+
+    def visit_Attribute(self, node):
+        # 递归处理链式属性 obj.a.b.c
+        full_attr, root_name = self._extract_full_attribute(node)
+        if full_attr and root_name:
             if isinstance(node.ctx, ast.Load):
-                if cur.id in self.local_vars or cur.id in self.global_vars:
+                if not self._is_shadowed(root_name) and (root_name in self.local_vars or root_name in self.global_vars):
                     self.dependencies.add(full_attr)
             elif isinstance(node.ctx, (ast.Store, ast.Del)):
                 self.assigned_vars.add(full_attr)
         else:
-            self.visit(cur)
+            self.visit(node.value)
 
     def visit_Call(self, node):
         # 支持链式调用 obj.method1().method2()
@@ -42,6 +108,9 @@ class LineDependencyAnalyzer(ast.NodeVisitor):
             if isinstance(func_node, ast.Name):
                 self.dependencies.add(func_node.id)
             elif isinstance(func_node, ast.Attribute):
+                called_attr = self._extract_called_attribute(func_node)
+                if called_attr:
+                    self.dependencies.add(called_attr)
                 # 递归 Attribute 的 value
                 add_func_name_to_deps(func_node.value)
             elif isinstance(func_node, ast.Call):
@@ -61,6 +130,7 @@ class LineDependencyAnalyzer(ast.NodeVisitor):
 
     def visit_AugAssign(self, node):
         # 处理 x += y
+        self._record_load_from_target(node.target)
         self.visit(node.target)
         self.visit(node.value)
 
@@ -75,63 +145,116 @@ class LineDependencyAnalyzer(ast.NodeVisitor):
 
     def visit_Lambda(self, node):
         # 处理 lambda 捕获
-        for arg in node.args.args:
-            self.local_vars.add(arg.arg)
-        self.visit(node.body)
+        arg_names = {arg.arg for arg in node.args.args}
+        self._push_shadowed_scope(arg_names)
+        try:
+            self.visit(node.body)
+        finally:
+            self._pop_shadowed_scope()
 
     def visit_ListComp(self, node):
         # 处理列表推导式
-        for gen in node.generators:
-            self.visit(gen.iter)
-            for if_clause in gen.ifs:
-                self.visit(if_clause)
-            if isinstance(gen.target, ast.Name):
-                self.local_vars.add(gen.target.id)
-            else:
-                self.visit(gen.target)
-        self.visit(node.elt)
+        self._push_shadowed_scope()
+        try:
+            for gen in node.generators:
+                self.visit(gen.iter)
+                self.shadowed_scopes[-1].update(self._collect_target_names(gen.target))
+                for if_clause in gen.ifs:
+                    self.visit(if_clause)
+            self.visit(node.elt)
+        finally:
+            self._pop_shadowed_scope()
 
     def visit_DictComp(self, node):
-        for gen in node.generators:
-            self.visit(gen.iter)
-            for if_clause in gen.ifs:
-                self.visit(if_clause)
-            if isinstance(gen.target, ast.Name):
-                self.local_vars.add(gen.target.id)
-            else:
-                self.visit(gen.target)
-        self.visit(node.key)
-        self.visit(node.value)
+        self._push_shadowed_scope()
+        try:
+            for gen in node.generators:
+                self.visit(gen.iter)
+                self.shadowed_scopes[-1].update(self._collect_target_names(gen.target))
+                for if_clause in gen.ifs:
+                    self.visit(if_clause)
+            self.visit(node.key)
+            self.visit(node.value)
+        finally:
+            self._pop_shadowed_scope()
 
     def visit_SetComp(self, node):
-        for gen in node.generators:
-            self.visit(gen.iter)
-            for if_clause in gen.ifs:
-                self.visit(if_clause)
-            if isinstance(gen.target, ast.Name):
-                self.local_vars.add(gen.target.id)
-            else:
-                self.visit(gen.target)
-        self.visit(node.elt)
+        self._push_shadowed_scope()
+        try:
+            for gen in node.generators:
+                self.visit(gen.iter)
+                self.shadowed_scopes[-1].update(self._collect_target_names(gen.target))
+                for if_clause in gen.ifs:
+                    self.visit(if_clause)
+            self.visit(node.elt)
+        finally:
+            self._pop_shadowed_scope()
 
     def visit_GeneratorExp(self, node):
-        for gen in node.generators:
-            self.visit(gen.iter)
-            for if_clause in gen.ifs:
-                self.visit(if_clause)
-            if isinstance(gen.target, ast.Name):
-                self.local_vars.add(gen.target.id)
-            else:
-                self.visit(gen.target)
-        self.visit(node.elt)
+        self._push_shadowed_scope()
+        try:
+            for gen in node.generators:
+                self.visit(gen.iter)
+                self.shadowed_scopes[-1].update(self._collect_target_names(gen.target))
+                for if_clause in gen.ifs:
+                    self.visit(if_clause)
+            self.visit(node.elt)
+        finally:
+            self._pop_shadowed_scope()
 
     def visit_FunctionDef(self, node):
-        # 处理嵌套函数定义
-        self.local_vars.add(node.name)
-        for arg in node.args.args:
-            self.local_vars.add(arg.arg)
-        for stmt in node.body:
-            self.visit(stmt)
+        # 函数定义在当前作用域绑定函数名；默认参数和装饰器依赖在定义时生效
+        self.assigned_vars.add(node.name)
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for default in node.args.defaults:
+            self.visit(default)
+        for default in node.args.kw_defaults:
+            if default is not None:
+                self.visit(default)
+        if node.returns is not None:
+            self.visit(node.returns)
+
+    def visit_AsyncFunctionDef(self, node):
+        self.visit_FunctionDef(node)
+
+    def visit_ClassDef(self, node):
+        self.assigned_vars.add(node.name)
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for base in node.bases:
+            self.visit(base)
+        for keyword in node.keywords:
+            self.visit(keyword.value)
+
+    def visit_If(self, node):
+        self.visit(node.test)
+
+    def visit_While(self, node):
+        self.visit(node.test)
+
+    def visit_For(self, node):
+        self.visit(node.target)
+        self.visit(node.iter)
+
+    def visit_AsyncFor(self, node):
+        self.visit_For(node)
+
+    def visit_With(self, node):
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self.visit(item.optional_vars)
+
+    def visit_AsyncWith(self, node):
+        self.visit_With(node)
+
+    def visit_Try(self, node):
+        return
+
+    def visit_NamedExpr(self, node):
+        self.visit(node.value)
+        self.visit(node.target)
 
     def visit_IfExp(self, node):
         # 处理三元表达式
@@ -153,6 +276,13 @@ class LineDependencyAnalyzer(ast.NodeVisitor):
             self.visit(tree)
         except SyntaxError:
             pass
+        return {
+            "dependencies": self.dependencies,
+            "assigned_vars": self.assigned_vars
+        }
+
+    def analyze_node(self, node):
+        self.visit(node)
         return {
             "dependencies": self.dependencies,
             "assigned_vars": self.assigned_vars
@@ -196,91 +326,273 @@ class DependencyTree:
                 self.files.update(get_files(item))
 
         return self.files
+
+    def _coerce_line_number(self, value):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+        return 0
+
+    def _build_source_index(self):
+        source_index = {}
+
+        class DefinitionIndexer(ast.NodeVisitor):
+            def __init__(self):
+                self.scope_stack = []
+                self.params_by_scope = {}
+                self.defs_by_scope = {}
+                self.defs_by_name = {}
+
+            def _scope_label(self):
+                return self.scope_stack[-1] if self.scope_stack else "<module>"
+
+            def _record_def(self, scope, name, kind, line):
+                self.defs_by_scope[(scope, name)] = {
+                    "kind": kind,
+                    "scope": scope,
+                    "line": line,
+                }
+                self.defs_by_name.setdefault(
+                    name,
+                    {
+                        "kind": kind,
+                        "scope": scope,
+                        "line": line,
+                    },
+                )
+
+            def _record_params(self, func_name, node):
+                params = {}
+                positional = list(getattr(node.args, "posonlyargs", [])) + list(node.args.args)
+                for arg in positional:
+                    params[arg.arg] = node.lineno
+                if node.args.vararg:
+                    params[node.args.vararg.arg] = node.lineno
+                for arg in node.args.kwonlyargs:
+                    params[arg.arg] = node.lineno
+                if node.args.kwarg:
+                    params[node.args.kwarg.arg] = node.lineno
+                self.params_by_scope.setdefault(func_name, {}).update(params)
+
+            def visit_FunctionDef(self, node):
+                scope = self._scope_label()
+                self._record_def(scope, node.name, "func", node.lineno)
+                self._record_params(node.name, node)
+                self.scope_stack.append(node.name)
+                self.generic_visit(node)
+                self.scope_stack.pop()
+
+            def visit_AsyncFunctionDef(self, node):
+                self.visit_FunctionDef(node)
+
+            def visit_ClassDef(self, node):
+                scope = self._scope_label()
+                self._record_def(scope, node.name, "class", node.lineno)
+                self.scope_stack.append(node.name)
+                self.generic_visit(node)
+                self.scope_stack.pop()
+
+        for file_path in sorted(path for path in self.files if path):
+            index = {
+                "params_by_scope": {},
+                "defs_by_scope": {},
+                "defs_by_name": {},
+            }
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, "r", encoding="utf-8") as handle:
+                        tree = ast.parse(handle.read(), filename=file_path)
+                    indexer = DefinitionIndexer()
+                    indexer.visit(tree)
+                    index["params_by_scope"] = indexer.params_by_scope
+                    index["defs_by_scope"] = indexer.defs_by_scope
+                    index["defs_by_name"] = indexer.defs_by_name
+                except (OSError, SyntaxError):
+                    pass
+            source_index[file_path] = index
+
+        return source_index
+
+    def _infer_assigned_kind(self, name, scope, line_no, file_index):
+        if name.endswith("[]"):
+            return "subscript"
+        if "." in name:
+            return "attr"
+
+        definition = file_index.get("defs_by_scope", {}).get((scope, name))
+        if definition and definition.get("line") == line_no:
+            return definition["kind"]
+
+        return "var"
+
+    def _edge_kind_for_symbol(self, symbol_kind):
+        if symbol_kind == "param":
+            return "arg"
+        if symbol_kind == "func":
+            return "call"
+        if symbol_kind == "class":
+            return "ctor"
+        return "data"
+
+    def _build_paths(self, edges, symbols, max_paths_per_sink=8):
+        incoming = defaultdict(list)
+        outgoing = defaultdict(set)
+
+        for src, dst, _kind, _line, _hits in edges:
+            incoming[dst].append(src)
+            outgoing[src].add(dst)
+
+        sinks = [
+            symbol_id
+            for symbol_id in incoming
+            if symbol_id not in outgoing and symbols.get(symbol_id, ["var"])[0] not in {"func", "class", "param", "ref"}
+        ]
+
+        def walk(symbol_id, visited):
+            predecessors = incoming.get(symbol_id, [])
+            if not predecessors:
+                return [[symbol_id]]
+
+            paths = []
+            for predecessor in predecessors:
+                if predecessor in visited:
+                    continue
+                for path in walk(predecessor, visited | {predecessor}):
+                    paths.append(path + [symbol_id])
+                    if len(paths) >= max_paths_per_sink:
+                        return paths
+            return paths or [[symbol_id]]
+
+        paths_by_sink = {}
+        for sink in sinks:
+            sink_paths = walk(sink, {sink})
+            if sink_paths:
+                paths_by_sink[sink] = sink_paths[:max_paths_per_sink]
+
+        return paths_by_sink
     
     def parse_dependency(self):
         """
-        Parse the dependencies for each file in self.files from self.call_stack.
-
-        Returns:
-            dict: A dictionary where keys are file paths and values are dictionaries
-                mapping variable names (with scope chain and filename) to their dependencies.
+        Parse the execution stack into a compact dependency graph that is
+        optimized for downstream LLM consumption.
         """
-        import os
+        file_paths = sorted(path for path in self.files if path)
+        file_ids = {path: f"f{index}" for index, path in enumerate(file_paths, 1)}
+        source_index = self._build_source_index()
 
-        dependencies_by_file = {}
-        call_stack_items = self.call_stack.get("execution_stack", [])
+        graph = {
+            "_comment": (
+                "How to read this graph: symbols[id]=[kind,name,scope,file_id,line]; "
+                "edges=[source_symbol_id,target_symbol_id,edge_kind,line,hits]; "
+                "paths[sink_symbol_id] lists dependency paths that end at that sink."
+            ),
+            "version": "ddg.v2",
+            "trace_started_at": self.call_stack.get("trace_started_at"),
+            "files": {file_id: path for path, file_id in file_ids.items()},
+            "symbols": {},
+            "edges": [],
+            "paths": {},
+        }
 
-        def _traverse_stack(stack, file_path, var_info, scope_chain):
+        symbol_by_key = {}
+        latest_symbol = {}
+        edge_hits = defaultdict(int)
+        next_symbol_id = 1
+
+        def ensure_symbol(kind, name, scope, file_id, line_no):
+            nonlocal next_symbol_id
+            key = (kind, name, scope, file_id, line_no)
+            if key in symbol_by_key:
+                return symbol_by_key[key]
+
+            symbol_id = f"s{next_symbol_id}"
+            next_symbol_id += 1
+            graph["symbols"][symbol_id] = [kind, name, scope, file_id, line_no]
+            symbol_by_key[key] = symbol_id
+            return symbol_id
+
+        def resolve_dependency_symbol(dep_name, scope, file_path, file_id, line_no):
+            same_scope_key = (file_id, scope, dep_name)
+            module_scope_key = (file_id, "<module>", dep_name)
+            if same_scope_key in latest_symbol:
+                return latest_symbol[same_scope_key]
+            if module_scope_key in latest_symbol:
+                return latest_symbol[module_scope_key]
+
+            file_index = source_index.get(file_path, {})
+            param_line = file_index.get("params_by_scope", {}).get(scope, {}).get(dep_name)
+            if param_line is not None:
+                symbol_id = ensure_symbol("param", dep_name, scope, file_id, param_line)
+                latest_symbol[same_scope_key] = symbol_id
+                return symbol_id
+
+            definition = file_index.get("defs_by_name", {}).get(dep_name)
+            if definition:
+                symbol_id = ensure_symbol(
+                    definition["kind"],
+                    dep_name,
+                    definition["scope"],
+                    file_id,
+                    definition["line"],
+                )
+                latest_symbol[(file_id, definition["scope"], dep_name)] = symbol_id
+                return symbol_id
+
+            kind = "attr" if "." in dep_name else "ref"
+            return ensure_symbol(kind, dep_name, scope, file_id, 0)
+
+        def traverse(stack):
             for item in stack:
                 details = item.get("details", {})
-                line_no = details.get("line_no", None)
-                # if line_no == 0: line_no = 1  # 确保行号从1开始，以避免在后续使用 vscode extension 处理行号时遇到 0 行号为非法值的问题
-                func_name = details.get("func", None)
-                file_name = os.path.splitext(os.path.basename(details.get("file_path", "")))[0] if details.get("file_path") else ""
-                # 构建新的作用域链
-                # new_scope_chain = scope_chain.copy()
-                new_scope_chain = []
-                if func_name:
-                    new_scope_chain.append(func_name)
-                if details.get("file_path") == file_path:
+                event_type = item.get("type")
+                file_path = details.get("file_path")
+                if file_path not in file_ids:
+                    if "daughter_stack" in details:
+                        traverse(details["daughter_stack"])
+                    continue
+
+                if event_type == "LINE":
+                    file_id = file_ids[file_path]
+                    scope = details.get("func") or "<module>"
+                    line_no = self._coerce_line_number(details.get("line_no"))
                     assigned_vars = details.get("assigned_vars", [])
                     dependencies = details.get("dependencies", [])
-                    errors = details.get("errors", {}) if "errors" in details else {}
+                    file_index = source_index.get(file_path, {})
 
-                    for var in assigned_vars:
-                        # 作用域链格式：filename.toplevelscopename.**.parentscopename.varname
-                        scoped_var = ".".join([file_name] + new_scope_chain + [var]) if file_name else ".".join(new_scope_chain + [var])
-                        if scoped_var not in var_info:
-                            var_info[scoped_var] = {
-                                "variableName": var,
-                                "lineNumber": line_no,
-                                "results": {} if not errors.get(var) else errors[var]
-                            }
-                        # 错误处理
-                        if errors.get(var):
-                            var_info[scoped_var]["results"] = errors[var]
-                            continue
-                        # 依赖处理
-                        for dep in dependencies:
-                            if isinstance(var_info[scoped_var]["results"], str):
-                                continue
-                            if dep not in var_info[scoped_var]["results"]:
-                                var_info[scoped_var]["results"][dep] = {
-                                    "first_occurrence": line_no,
-                                    "co_occurrences": [line_no]
-                                }
-                            else:
-                                if line_no not in var_info[scoped_var]["results"][dep]["co_occurrences"]:
-                                    var_info[scoped_var]["results"][dep]["co_occurrences"].append(line_no)
-                # 递归遍历 daughter_stack
+                    target_symbols = {}
+                    for var_name in assigned_vars:
+                        symbol_kind = self._infer_assigned_kind(var_name, scope, line_no, file_index)
+                        target_symbols[var_name] = ensure_symbol(symbol_kind, var_name, scope, file_id, line_no)
+
+                    for var_name, target_id in target_symbols.items():
+                        for dep_name in dependencies:
+                            source_id = resolve_dependency_symbol(dep_name, scope, file_path, file_id, line_no)
+                            source_kind = graph["symbols"][source_id][0]
+                            edge_key = (
+                                source_id,
+                                target_id,
+                                self._edge_kind_for_symbol(source_kind),
+                                line_no,
+                            )
+                            edge_hits[edge_key] += 1
+
+                    for var_name, target_id in target_symbols.items():
+                        latest_symbol[(file_id, scope, var_name)] = target_id
+
                 if "daughter_stack" in details:
-                    _traverse_stack(details["daughter_stack"], file_path, var_info, new_scope_chain)
+                    traverse(details["daughter_stack"])
 
-        for file_path in self.files:
-            var_info = {}
-            _traverse_stack(call_stack_items, file_path, var_info, [])
-            # 对每个依赖的 co_occurrences 排序，去重
-            for var in var_info:
-                results = var_info[var]["results"]
-                if isinstance(results, dict):
-                    for dep in results:
-                        results[dep]["co_occurrences"] = sorted(list(set(results[dep]["co_occurrences"])))
-            # 第二步：修正 first_occurrence
-            for var in var_info:
-                results = var_info[var]["results"]
-                if isinstance(results, dict):
-                    for dep in results:
-                        # dep 变量的 lineNumber
-                        # dep 可能是未加作用域链的变量名，需要补全作用域链
-                        dep_scoped = None
-                        for candidate in var_info:
-                            if candidate.endswith(f".{dep}") or candidate == dep:
-                                dep_scoped = candidate
-                                break
-                        if dep_scoped and "lineNumber" in var_info[dep_scoped]:
-                            results[dep]["first_occurrence"] = var_info[dep_scoped]["lineNumber"]
-#
-            dependencies_by_file[file_path] = var_info
+        traverse(self.call_stack.get("execution_stack", []))
 
-        self.dependency_by_file = dependencies_by_file
-        return dependencies_by_file
+        graph["edges"] = [
+            [src, dst, kind, line_no, hits]
+            for (src, dst, kind, line_no), hits in sorted(
+                edge_hits.items(),
+                key=lambda item: (item[0][3], item[0][0], item[0][1], item[0][2]),
+            )
+        ]
+        graph["paths"] = self._build_paths(graph["edges"], graph["symbols"])
+
+        self.dependency_by_file = graph
+        return graph

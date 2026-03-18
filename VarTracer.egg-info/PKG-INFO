@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: VarTracer
-Version: 0.1.33
+Version: 0.2.1
 Summary: A Python-based tool for dynamic code execution tracing and dependency analysis.
 Home-page: https://github.com/jiujiucs17/VarTracer
 Author: Mengqi Zhang
@@ -36,16 +36,16 @@ VarTracer is a Python-based tool designed for dynamic code execution tracing and
 
 ## File Structure
 
-- `VarTracer.py`: Core implementation of the tracing functionality.
+- `VarTracer_Core.py`: Core implementation of the tracing functionality.
 - `ASTParser.py`: Dependency analysis using Python's `ast` module.
 - `Utilities.py`: Helper functions for the tool.
-- `test_code/`: Sample test scripts.
+- `test_code/`: Automated `unittest` test suite.
 - `trace_output/`: Directory for trace output files.
 
 ## Quick Start
 
 1. **Run the Example**:
-   Modify and execute the following code in `VarTracer.py`:
+   Modify and execute the following code in `VarTracer_Core.py`:
    ```python
    if __name__ == "__main__":
        from pathlib import Path
@@ -54,13 +54,14 @@ VarTracer is a Python-based tool designed for dynamic code execution tracing and
        vt = VarTracer(clean_stdlib=True)
        vt.start()
 
-       from test_code import playground_2 as pg2
-       pg2.main()
+       a = 1
+       b = a + 2
 
        vt.stop()
        vt.raw_result(output_dir=output_dir)
        vt.exec_stack_txt(output_path=output_dir)
        vt.exec_stack_json(output_path=output_dir)
+   ```
 
 2. **View Results**:
     - `trace_output/VTrace_exec_stack.json`: Nested JSON execution stack.
@@ -106,6 +107,76 @@ Text format
             dependencies: ['y', 'z']
             assigned_vars: ['x']
     RETURN ← MODULE 'test_code.playground' | FILE '/path/to/playground.py' | FUNC 'main'()
+
+## Testing
+
+### Why the tests are structured this way
+
+The test suite is organized around the two main pipelines of the project:
+
+- **Data dependency analysis**: verifies that assignments and variable uses are extracted correctly from Python syntax.
+- **Execution trace generation**: verifies that runtime events are captured correctly and exported in the expected formats.
+
+The design goal is to make failures easy to localize:
+
+- **Unit tests** focus on the smallest analysis component, `LineDependencyAnalyzer`.
+- **Integration tests** execute short temporary Python scripts through `VarTracer`, then inspect the generated execution stack and dependency tree.
+- **Interface tests** cover `extension_interface`, because it launches a subprocess and has different failure modes from the direct API.
+- **Regression tests** cover cases that previously failed and were repaired, such as multiline assignments, augmented assignments, walrus expressions, comprehension scoping, and internal tracer-frame leakage.
+
+### Design ideas behind the recent fixes
+
+The current tests encode the following design decisions:
+
+- **Statement-level analysis instead of single-line parsing**:
+  dependency analysis is now tied to the full AST statement that covers the current trace line. This is what allows multiline assignments and walrus expressions in control-flow headers to work correctly.
+- **Read/write semantics for augmented assignment**:
+  statements like `a += 1` must treat `a` as both a dependency and an assignment target.
+- **Local scope shadowing inside expressions**:
+  lambda parameters and comprehension targets should not be mistaken for outer-scope data dependencies.
+- **Clean execution traces**:
+  exported traces should describe the target program, not `VarTracer`'s own internal implementation frames.
+
+### How to run the tests
+
+Run the full suite from the repository root:
+
+```bash
+/Users/zhangmengqi/miniforge3/envs/vartracer/bin/python -m unittest discover -s VarTracer/test_code -p "test_*.py" -v
+```
+
+Run only the data dependency tests:
+
+```bash
+/Users/zhangmengqi/miniforge3/envs/vartracer/bin/python -m unittest \
+  VarTracer.test_code.test_line_dependency_analyzer \
+  VarTracer.test_code.test_vartracer_flow \
+  VarTracer.test_code.test_known_limitations -v
+```
+
+Run only the execution trace tests:
+
+```bash
+/Users/zhangmengqi/miniforge3/envs/vartracer/bin/python -m unittest \
+  VarTracer.test_code.test_execution_trace \
+  VarTracer.test_code.test_execution_trace_limitations \
+  VarTracer.test_code.test_extension_interface -v
+```
+
+### What each test file is responsible for
+
+- `test_line_dependency_analyzer.py`: unit tests for individual syntax forms.
+- `test_vartracer_flow.py`: end-to-end dependency-tree checks on small scripts.
+- `test_known_limitations.py`: regression coverage for cases that were previously broken.
+- `test_execution_trace.py`: execution-stack structure, exception events, and trace exports.
+- `test_execution_trace_limitations.py`: regression coverage for internal-frame filtering.
+- `test_extension_interface.py`: subprocess-based extension entrypoint behavior.
+
+### How to interpret results
+
+- `ok`: the tested behavior matches the current contract.
+- `FAIL`: the code ran, but a result is wrong.
+- `ERROR`: the test could not complete, often due to an exception, import problem, or file/output issue.
 
 ## License
 VarTracer is licensed under the MIT License.

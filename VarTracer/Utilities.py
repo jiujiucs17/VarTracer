@@ -1,8 +1,21 @@
 import inspect
 import os
-import shutil
 import subprocess
 import json
+try:
+    import xlsxwriter
+except ImportError:
+    xlsxwriter = None
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable=None, *args, **kwargs):
+        return iterable if iterable is not None else []
+from datetime import datetime
+# import openpyxl
+# from openpyxl.comments import Comment
+import re
 
 def safe_serialize(obj):
         """将对象转换为字符串表示"""
@@ -18,13 +31,47 @@ def create_event(event_type, base_info, extra_info=None):
         event["details"].update(extra_info)
     return event
 
+def _dep_tree_symbol_records(dep_tree):
+    files = dep_tree.get("files", {})
+    records = {}
+    for symbol_id, symbol_meta in dep_tree.get("symbols", {}).items():
+        if len(symbol_meta) < 5:
+            continue
+        kind, name, scope, file_id, line_no = symbol_meta
+        records[symbol_id] = {
+            "kind": kind,
+            "name": name,
+            "scope": scope,
+            "file_id": file_id,
+            "file_path": files.get(file_id, ""),
+            "line": line_no,
+        }
+    return records
+
+def _dep_tree_incoming_edges(dep_tree):
+    incoming = {}
+    for edge in dep_tree.get("edges", []):
+        if len(edge) < 5:
+            continue
+        src, dst, kind, line_no, hits = edge
+        incoming.setdefault(dst, []).append({
+            "src": src,
+            "kind": kind,
+            "line": line_no,
+            "hits": hits,
+        })
+    return incoming
+
+def _dep_tree_symbol_label(record):
+    return f"{record['scope']}::{record['name']}"
+
 class FrameSnapshot:
     def __init__(self, frame):
         self.file_name = frame.f_code.co_filename
         self.function_name = frame.f_code.co_name
         self.line_no = frame.f_lineno
         self.locals = frame.f_locals.copy()
-        self.globals = {k: safe_serialize(v) for k, v in list(frame.f_globals.items()) if k in frame.f_code.co_names}
+        self.globals = {k: str(v) for k, v in frame.f_globals.items() if k in frame.f_code.co_names}
         self.code_context = self._get_code_context(frame)
 
         self.package_name = frame.f_globals.get('__package__', None)
@@ -155,18 +202,24 @@ def extension_interface(file_path, print=False):
 
         # 修正 dependency 中 temp_file_path 指向脚本的变量行号
         def fix_dependency_line_numbers(dependency, target_path):
-            if target_path in dependency:
-                for var, info in dependency[target_path].items():
-                    if "lineNumber" in info and info["lineNumber"].isdigit():
-                        info["lineNumber"] = str(int(info["lineNumber"]) - 4)
-                    if "results" in info and isinstance(info["results"], dict):
-                        for res in info["results"].values():
-                            if "first_occurrence" in res and res["first_occurrence"].isdigit():
-                                res["first_occurrence"] = str(int(res["first_occurrence"]) - 4)
-                            if "co_occurrences" in res and isinstance(res["co_occurrences"], list):
-                                res["co_occurrences"] = [
-                                    str(int(x) - 4) if x.isdigit() else x for x in res["co_occurrences"]
-                                ]
+            files = dependency.get("files", {})
+            target_file_ids = {file_id for file_id, path in files.items() if path == target_path}
+            if not target_file_ids:
+                return
+
+            for symbol_meta in dependency.get("symbols", {}).values():
+                if len(symbol_meta) < 5:
+                    continue
+                if symbol_meta[3] in target_file_ids and isinstance(symbol_meta[4], int):
+                    symbol_meta[4] = symbol_meta[4] - 4
+
+            symbols = dependency.get("symbols", {})
+            for edge in dependency.get("edges", []):
+                if len(edge) < 5:
+                    continue
+                dst_symbol = symbols.get(edge[1])
+                if dst_symbol and len(dst_symbol) >= 5 and dst_symbol[3] in target_file_ids and isinstance(edge[3], int):
+                    edge[3] = edge[3] - 4
 
         # 修正 execution_stack 中 temp_file_path 指向脚本的行号，以及删除最后一个行的 VarTracer 相关信息，即代码内容为“exec_stack_json = vt.exec_stack_json()”的元素
         def fix_stack_line_numbers(execution_stack, target_path):
@@ -199,16 +252,50 @@ def extension_interface(file_path, print=False):
             exec_stack["execution_stack"] = filtered_stack
 
         dependency = result_json.get("dependency", {})
-        for dep_file in list(dependency.keys()):
-            var_items = dependency[dep_file]
-            keys_to_del = [k for k, v in var_items.items() if v.get("variableName") == "exec_stack_json"]
-            for k in keys_to_del:
-                del var_items[k]
-            if dep_file.endswith("VarTracer_Code.py"):
-                del dependency[dep_file]
-        keys_to_del = [k for k in dependency.keys() if k.endswith("VarTracer_Core.py")]
-        for k in keys_to_del:
-            del dependency[k]
+        if dependency:
+            symbol_records = _dep_tree_symbol_records(dependency)
+            files = dependency.get("files", {})
+            file_ids_to_remove = {
+                file_id
+                for file_id, path in files.items()
+                if path.endswith("VarTracer_Code.py") or path.endswith("VarTracer_Core.py")
+            }
+            symbol_ids_to_remove = {
+                symbol_id
+                for symbol_id, record in symbol_records.items()
+                if record["name"] == "exec_stack_json" or record["file_id"] in file_ids_to_remove
+            }
+
+            if symbol_ids_to_remove:
+                dependency["symbols"] = {
+                    symbol_id: symbol_meta
+                    for symbol_id, symbol_meta in dependency.get("symbols", {}).items()
+                    if symbol_id not in symbol_ids_to_remove
+                }
+                dependency["edges"] = [
+                    edge
+                    for edge in dependency.get("edges", [])
+                    if edge[0] not in symbol_ids_to_remove and edge[1] not in symbol_ids_to_remove
+                ]
+                dependency["paths"] = {
+                    sink_id: [
+                        path for path in sink_paths
+                        if sink_id not in symbol_ids_to_remove and all(node_id not in symbol_ids_to_remove for node_id in path)
+                    ]
+                    for sink_id, sink_paths in dependency.get("paths", {}).items()
+                    if sink_id not in symbol_ids_to_remove
+                }
+
+            used_file_ids = {
+                symbol_meta[3]
+                for symbol_meta in dependency.get("symbols", {}).values()
+                if len(symbol_meta) >= 5
+            }
+            dependency["files"] = {
+                file_id: path
+                for file_id, path in dependency.get("files", {}).items()
+                if file_id in used_file_ids and file_id not in file_ids_to_remove
+            }
 
         # 去除所有(VarTracerTemp)字符串
         result_json = remove_vartracertemp_str(result_json)
@@ -224,3 +311,611 @@ def extension_interface(file_path, print=False):
         # if os.path.exists(temp_file_path):
         #     os.remove(temp_file_path)
         pass
+
+def break_down_granularity(exec_stack, dep_tree):
+    """
+    将 exec_stack（JSON对象）展开为事件列表，并为每个事件添加 module_event 和 function_event 字段。
+    每个事件包含如下字段：
+      event_no, file_path, event_type, module, call_depth, line_no, line_content, variable, dep. variable,
+      module_event, function_event
+    """
+    symbol_records = _dep_tree_symbol_records(dep_tree)
+    incoming_edges = _dep_tree_incoming_edges(dep_tree)
+    file_to_id = {path: file_id for file_id, path in dep_tree.get("files", {}).items()}
+
+    def get_dep_variables(dep_tree, event):
+        assigned_vars = event.get("details", {}).get("assigned_vars", [])
+        event_file_path = event.get("details", {}).get("file_path", "")
+        event_func = event.get("details", {}).get("func", "")
+        event_scope = event_func or "<module>"
+        event_line = event.get("details", {}).get("line_no", "")
+        event_file_id = file_to_id.get(event_file_path)
+        text = ""
+        if not assigned_vars or len(assigned_vars) == 0:
+            return ""
+        else:
+            for var in assigned_vars:
+                target_symbol_id = None
+                for symbol_id, record in symbol_records.items():
+                    if (
+                        record["name"] == var
+                        and record["scope"] == event_scope
+                        and record["file_id"] == event_file_id
+                        and str(record["line"]) == str(event_line)
+                    ):
+                        target_symbol_id = symbol_id
+                        break
+
+                dependent_vars = []
+                for edge in incoming_edges.get(target_symbol_id, []):
+                    record = symbol_records.get(edge["src"])
+                    if record:
+                        dependent_vars.append(record["name"])
+
+                text_dep_vars = f"{var}: DEPENDENCIES: "
+                text_dep_vars += f"{', '.join(sorted(set(dependent_vars)))}" if dependent_vars else "NONE"
+                text += text_dep_vars + " ｜-|-|-｜ "
+            
+            return text.strip(" ｜-|-|-｜ ")
+
+    # 展平 execution_stack
+    events = []
+    def traverse(stack, event_no_counter):
+        for event in stack:
+            details = event.get("details", {})
+            # 变量名
+            assigned_vars = details.get("assigned_vars", [])
+            variable = assigned_vars[0] if assigned_vars else ""
+            # 依赖变量
+            dep_variable = get_dep_variables(dep_tree, event)
+
+            # if module name is "(unknown-module)", use string "top level script" instead
+            if details.get("module") == "(unknown-module)":
+                module_name = "**** top level script ****"
+            else:
+                module_name = details.get("module")
+            events.append({
+                "event_no": event_no_counter[0],
+                "file_path": details.get("file_path", ""),
+                "event_type": event.get("type", ""),
+                "module": module_name,
+                "function": details.get("func", ""),
+                "call_depth": details.get("depth", ""),
+                "line_no": details.get("line_no", ""),
+                "line_content": details.get("line_content", ""),
+                "variable": variable,
+                "dep.variable": dep_variable,
+                # module_event/function_event 暂时空
+            })
+            event_no_counter[0] += 1
+            # 递归 daughter_stack
+            if "daughter_stack" in details:
+                traverse(details["daughter_stack"], event_no_counter)
+    traverse(exec_stack.get("execution_stack", []), [1])
+
+    # 计算 module_event 和 function_event
+    module_count = {}
+    function_count = {}
+    last_module = None
+    last_function = None
+    module_event_idx = 0
+    function_event_idx = 0
+
+    for idx, event in enumerate(events):
+        module = event["module"]
+        function = event.get("function")
+
+        # module_event
+        if module != last_module:
+            module_event_idx = module_count.get(module, 0) + 1
+            module_count[module] = module_event_idx
+            last_module = module
+        event["module_event"] = f"{module}_{module_event_idx}"
+
+        # function_event
+        func_key = (f"{module}_{module_event_idx}", function)
+        if func_key != last_function:
+            function_event_idx = function_count.get(func_key, 0) + 1
+            function_count[func_key] = function_event_idx
+            last_function = func_key
+        event["function_event"] = f"{module}_{module_event_idx}_{function}_{function_event_idx}"
+
+    return events
+
+def compare_event_lists(exec_stack0, exec_stack1, dep_tree0, dep_tree1):
+    """
+    对比两个 exec_stack，分别展开为事件列表，并为每个事件添加 unique_to_this_feature 字段。
+    如果某事件仅在 events1 或 events2 中出现，则其 unique_to_this_feature 字段为 True。
+    判断标准为 (file_path, line_no, line_content) 三元组完全一致。
+    返回 (events1, events2)
+    """
+    events0 = break_down_granularity(exec_stack0, dep_tree0)
+    events1 = break_down_granularity(exec_stack1, dep_tree1)
+
+    def make_event_key(event):
+        return (event.get("file_path", ""), str(event.get("line_no", "")), str(event.get("line_content", "")))
+
+    set1 = set(make_event_key(e) for e in events1)
+    set0 = set(make_event_key(e) for e in events0)
+
+    for e in events0:
+        e["unique_to_this_feature"] = make_event_key(e) not in set1
+    for e in events1:
+        e["unique_to_this_feature"] = make_event_key(e) not in set0
+
+    return events0, events1
+
+def compare_exec_stack(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_path):
+    """
+    对比两个 exec_stack，分别以 module granularity、function granularity、event granularity 展示。
+    输出为 xlsx 文件，包含多个 sheet：
+      1. module_granularity：每个 module_event 的信息
+      2. module_event_n：每个 module_event 的 func_event 信息，包含所有 func_event，并有 this_context 字段
+      3. module_event_n_func_event_m：每个 func_event 的 line_event 信息，包含所有 line_event，并有 this_context 字段
+    所有 sheet 都包含完整数据，并添加 this_context 字段。
+    保存后用 openpyxl 设置除 module_granularity 外所有 sheet 的筛选条件为 this_context=true。
+    """
+
+    # 1. 生成 events0, events1
+    events0, events1 = compare_event_lists(exec_stack0, exec_stack1, dep_tree0, dep_tree1)
+
+    def build_json(events):
+        # 提取所有 func_event
+        func_event_map = {}
+        func_event_list = []
+        for e in events:
+            fe = e["function_event"]
+            if fe not in func_event_map:
+                func_event_map[fe] = []
+            func_event_map[fe].append(e)
+
+        for fe, fe_events in func_event_map.items():
+            func_name = fe_events[0].get("function_name") or fe_events[0].get("function") or ""
+            file_path = fe_events[0].get("file_path", "")
+            fe_event_nos = [ev["event_no"] for ev in fe_events]
+            fe_unique_to_this_feature = any(ev["unique_to_this_feature"] for ev in fe_events)
+            line_events = []
+            for lev in fe_events:
+                line_events.append({
+                    "event_no": lev["event_no"],
+                    "event_type": lev["event_type"],
+                    "call_depth": lev["call_depth"],
+                    "file_path": lev["file_path"],
+                    "line_no": lev["line_no"],
+                    "line_content": lev["line_content"],
+                    "variable": lev["variable"],
+                    "dep.variable": lev["dep.variable"],
+                    "unique_to_this_feature": lev["unique_to_this_feature"],
+                    "module_event": lev["module_event"],
+                    "function_event": fe
+                })
+            func_event_list.append({
+                "func_event_no": len(func_event_list) + 1,
+                "func_event_identifier": fe, #fe_events[0]["function_event"],
+                "func_name": func_name,
+                "file_path": file_path,
+                "first_event_no": min(fe_event_nos),
+                "last_event_no": max(fe_event_nos),
+                "unique_to_this_feature": fe_unique_to_this_feature,
+                "line_events": line_events,
+                "module_event": fe_events[0]["module_event"]
+            })
+        # 提取所有 module_event
+        module_event_map = {}
+        module_event_list = []
+        for e in events:
+            me = e["module_event"]
+            if me not in module_event_map:
+                module_event_map[me] = []
+            module_event_map[me].append(e)
+        for idx, (me, me_events) in enumerate(module_event_map.items(), 1):
+            module_name = me_events[0]["module"]
+            event_nos = [ev["event_no"] for ev in me_events]
+            unique_to_this_feature = any(ev["unique_to_this_feature"] for ev in me_events)
+            module_event_list.append({
+                "module_event_no": idx,
+                "module_event_identifier": me,
+                "module_name": module_name,
+                "first_event_no": min(event_nos),
+                "last_event_no": max(event_nos),
+                "unique_to_this_feature": unique_to_this_feature
+            })
+        return module_event_list, func_event_list
+
+    def write_xlsx(events, filename):
+        module_event_list, func_event_list = build_json(events)
+
+        def write_headers_with_comments(worksheet, headers):
+            for col, h in enumerate(headers):
+                worksheet.write(0, col, h)
+                clean_h = re.sub(r"\d+", "", h)
+                if clean_h in label_meanings:
+                    worksheet.write_comment(0, col, label_meanings[clean_h], {'width': 200, 'height': 100})
+        # 提取所有 line_event
+        all_line_events = []
+        for func in func_event_list:
+            for le in func["line_events"]:
+                all_line_events.append(le)
+        workbook = xlsxwriter.Workbook(os.path.join(output_path, filename))
+        highlight_cell_format_pale = workbook.add_format({
+            'bg_color': "#FFEDEF",    # 背景色
+            'font_color': '#9C0006',  # 字体颜色
+            'border': 1,  # 边框
+            'align': 'left', 
+            'valign': 'vcenter',
+            'align': 'center'
+        })
+        highlight_cell_format_shine = workbook.add_format({
+            'bg_color': "#FFC7CE",    # 背景色
+            'font_color': '#9C0006',  # 字体颜色
+            'border': 1,  # 边框
+            'align': 'left', 
+            'valign': 'vcenter',
+            'align': 'center'
+
+        })
+        regular_cell_format = workbook.add_format({
+            'bg_color': '#FFFFFF',    # 背景色
+            'font_color': '#000000',  # 字体颜色
+            'border': 1,  # 边框
+            'align': 'left', 
+            'valign': 'vcenter',
+            'align': 'center'
+        })
+        hyperlink_format = workbook.add_format({
+            'font_color': '#0000FF',  # 超链接字体颜色
+            'underline': 1,           # 下划线
+            'align': 'left', 
+            'valign': 'vcenter',
+            'align': 'left'
+        })
+        # 1. module_granularity sheet
+        module_headers = [
+            "module_event_no", "module_name", "execution_sequence_slice", "unique_to_this_feature", "associated_func_events" 
+        ]
+        module_sheet = workbook.add_worksheet("module_granularity")
+        write_headers_with_comments(module_sheet, module_headers)
+        module_sheet.autofilter(0, 0, len(module_event_list), len(module_headers) - 1)
+
+        for row, module in enumerate(module_event_list, 1):
+            mrow_format = regular_cell_format
+            if module["unique_to_this_feature"]:
+                mrow_format = highlight_cell_format_shine
+
+            for col, key in enumerate(module_headers[:-1]):  # 最后一个字段 "associated_func_events" 不在 module_event_list 中
+                if key == "execution_sequence_slice":
+                    module_sheet.write(row, col, f"No. {module['first_event_no']} to {module['last_event_no']} of all exec events", mrow_format)
+                else:
+                    module_sheet.write(row, col, module[key], mrow_format)
+
+        # 2. 每个 module_event_n sheet
+        for row, module in tqdm(enumerate(module_event_list, 1), desc="Generating module_events & func_events", total=len(module_event_list)):
+            func_headers = [
+            "func_event_no", "func_name", "file_path", "module_event_no", "execution_sequence_slice", "unique_to_this_feature", f"within_module_event_{row}", "associated_line_events"
+        ]
+
+            sheet_name = f"m_evt_{module['module_event_no']}"
+            func_sheet = workbook.add_worksheet(sheet_name)
+
+            if len(func_event_list) == 0:
+                # 如果没有 func_event，则跳过这个 module_event 的 sheet
+                module_sheet.write(row, len(module_headers) - 1, "-")
+                continue
+
+            module_sheet.write_url(row, len(module_headers) - 1, 
+                                   f"internal:'{sheet_name}'!A1",
+                                   string=f"func_events")  # 添加超链接到 func_event sheet
+
+            write_headers_with_comments(func_sheet, func_headers)
+            func_sheet.autofilter(0, 0, len(func_event_list), len(func_headers) - 1)
+            
+            for frow, func in enumerate(func_event_list, 1):
+                this_context = func["module_event"] == module["module_event_identifier"]
+                if this_context and func["unique_to_this_feature"]:
+                    frow_format = highlight_cell_format_shine
+                elif not this_context and func["unique_to_this_feature"]:
+                    frow_format = highlight_cell_format_pale
+                else:
+                    frow_format = regular_cell_format
+
+                for col, key in enumerate(func_headers[:-1]):  # 最后一个字段 "associated_line_events" 不在 func_event_list 中
+                    if key == f"within_module_event_{row}":
+                        func_sheet.write(frow, col, this_context, frow_format)
+                    elif key == "execution_sequence_slice":
+                        func_sheet.write(frow, col, f"No. {func['first_event_no']} to {func['last_event_no']} of all exec events", frow_format)
+                    elif key == "module_event_no":
+                        # 查询 identifier为 module_event 的 module_event_no
+                        module_event_no = next((me["module_event_no"] for me in module_event_list if me["module_event_identifier"] == func["module_event"]), None)
+                        func_sheet.write(frow, col, module_event_no, frow_format)
+                    else:
+                        func_sheet.write(frow, col, func[key] if key in func else "", frow_format)
+
+                # 3. 每个 module_event_n_func_event_m sheet
+                if this_context:
+                    event_headers = [
+                        "event_no", "event_type", "call_depth", "file_path", "module_event_no", "function_event_no", "line_no",
+                        "line_content", "variable", "dep.variable", "unique_to_this_feature", f"within_func_event_{frow}"
+                    ]
+                    event_sheet_name = f"m_evt_{module['module_event_no']}_f_evt_{frow}"
+                    event_sheet = workbook.add_worksheet(event_sheet_name)
+
+                    func_sheet.write_url(frow, len(func_headers) - 1,
+                                         f"internal:'{event_sheet_name}'!A1",
+                                         string=f"line_events")
+
+                    write_headers_with_comments(event_sheet, event_headers)
+                    event_sheet.autofilter(0, 0, len(all_line_events), len(event_headers) - 1)
+                    for erow, event in enumerate(all_line_events, 1):
+                        this_context_event = event["function_event"] == func["func_event_identifier"]
+                        # erow_format = highlight_cell_format if this_context_event else regular_cell_format
+
+                        if this_context_event and event["unique_to_this_feature"]:
+                            erow_format = highlight_cell_format_shine
+                        elif not this_context_event and event["unique_to_this_feature"]:
+                            erow_format = highlight_cell_format_pale
+                        else:
+                            erow_format = regular_cell_format
+
+                        for ecol, eh in enumerate(event_headers):
+                            if eh == f"within_func_event_{frow}":
+                                event_sheet.write(erow, ecol, this_context_event, erow_format)
+                            elif eh == "module_event_no":
+                                # 查询 identifier为 module_event 的 module_event_no
+                                module_event_no = next((me["module_event_no"] for me in module_event_list if me["module_event_identifier"] == event["module_event"]), None)
+                                event_sheet.write(erow, ecol, module_event_no, erow_format)
+                            elif eh == "function_event_no":
+                                # 查询 identifier为 func_event 的 func_event_no
+                                func_event_no = next((fe["func_event_no"] for fe in func_event_list if fe["func_event_identifier"] == event["function_event"]), None)
+                                event_sheet.write(erow, ecol, func_event_no, erow_format)
+                            else:
+                                value = "-"
+                                if eh in event:
+                                    value = event[eh]
+                                    if value is None or value == "":
+                                        value = "-"
+                                event_sheet.write(erow, ecol, value, erow_format)
+
+                    last_col = event_sheet.dim_colmax if hasattr(event_sheet, 'dim_colmax') and event_sheet.dim_colmax is not None else 0
+                    last_row = event_sheet.dim_rowmax if hasattr(event_sheet, 'dim_rowmax') and event_sheet.dim_rowmax is not None else 0
+                    # 在最后一列右侧第一个单元格添加超链接
+                    event_sheet.write_url(0, last_col + 2, f"internal:'{sheet_name}'!A1", cell_format=hyperlink_format, string=f"back to function granularity")
+                    event_sheet.write_url(last_row + 2, 0, f"internal:'{sheet_name}'!A1", cell_format=hyperlink_format, string=f"back to function granularity")
+                else:
+                    func_sheet.write(frow, len(func_headers) - 1, "-")
+        
+        print("cleaning up workbooks...")
+        for worksheet in workbook.worksheets():
+            # 设置冻结窗格
+            worksheet.freeze_panes(1, 0)
+            # 设置默认列宽
+            default_width = 25
+            worksheet.set_column('A:XFD', default_width)
+            # 获取当前工作表的数据行数和列数
+            last_row = worksheet.dim_rowmax if hasattr(worksheet, 'dim_rowmax') and worksheet.dim_rowmax is not None else 1
+            last_col = worksheet.dim_colmax if hasattr(worksheet, 'dim_colmax') and worksheet.dim_colmax is not None else 0
+            # 在最后一列右侧第一个单元格添加超链接
+            worksheet.write_url(0, (last_col - 1 if len(worksheet.name) >= 22 else last_col + 1), "internal:'module_granularity'!A1", cell_format=hyperlink_format, string="back to module granularity")
+            worksheet.write_url((last_row + 1 if len(worksheet.name) >= 22 else last_row + 2), 0, "internal:'module_granularity'!A1", cell_format=hyperlink_format, string="back to module granularity")
+
+        workbook.close()
+
+        # openpyxl logic removed for performance optimization
+        pass
+
+
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    write_xlsx(events0, f"stack0_{timestamp}.xlsx")
+    write_xlsx(events1, f"stack1_{timestamp}.xlsx")
+
+    print(f"length of events0: {len(events0)}")
+    print(f"length of events1: {len(events1)}")
+
+    return None, None
+
+def compare_dependency(dep1, dep2, output_path, output_name="compare_dependency_result.xlsx"):
+    """
+    比较两个 VarTracer.dep_tree_json 生成的依赖树（JSON 格式），
+    输出两部分差异：
+      1. 只在 A 中有但 B 中没有的文件/变量
+      2. 只在 B 中有但 A 中没有的文件/变量
+    并将结果保存为 xlsx 文件，包含两个 sheet，按文件路径、变量名、变量行号纵向合并单元格。
+    """
+    import xlsxwriter
+    import os
+
+    output_xlsx = os.path.join(output_path, output_name)
+
+    def extract_vars(dep):
+        """
+        提取所有 (file_path, var_name, line_no) 元组。
+        返回: {(file_path, var_name, line_no): [dependency labels]}
+        """
+        result = {}
+        symbol_records = _dep_tree_symbol_records(dep)
+        incoming_edges = _dep_tree_incoming_edges(dep)
+        for symbol_id, record in symbol_records.items():
+            if record["kind"] in {"param", "ref"}:
+                continue
+            dependencies = []
+            for edge in incoming_edges.get(symbol_id, []):
+                source_record = symbol_records.get(edge["src"])
+                if source_record:
+                    dependencies.append(_dep_tree_symbol_label(source_record))
+            result[(record["file_path"], record["name"], str(record["line"]))] = sorted(set(dependencies))
+        return result
+
+    vars_A = extract_vars(dep1)
+    vars_B = extract_vars(dep2)
+
+    # 1. 只在 A 中有但 B 中没有
+    only_in_A = {k: v for k, v in vars_A.items() if k not in vars_B}
+    # 2. 只在 B 中有但 A 中没有
+    only_in_B = {k: v for k, v in vars_B.items() if k not in vars_A}
+
+    def prepare_sheet_data(var_dict):
+        """
+        生成 sheet 数据，每一行是
+        (file_path, var_name, line_no, dep_var, first_occurrence, co_occurrences)
+        """
+        rows = []
+        for (file_path, var_name, line_no), results in var_dict.items():
+            if not results:
+                # 没有依赖变量
+                rows.append((file_path, var_name, line_no, "-", "-", "-"))
+            else:
+                for dep_var in results:
+                    rows.append((file_path, var_name, line_no, dep_var, "-", "-"))
+        return rows
+
+    data_A = prepare_sheet_data(only_in_A)
+    data_B = prepare_sheet_data(only_in_B)
+
+    # 写入 xlsx
+    workbook = xlsxwriter.Workbook(output_xlsx)
+    border_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
+    header_fmt = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter'})
+
+    headers = ["File Path", "Variable", "Line No", "Dep.Var", "First Occurrence", "Co-occurrences"]
+
+    def write_sheet(sheet_name, data):
+        worksheet = workbook.add_worksheet(sheet_name)
+        for col, h in enumerate(headers):
+            worksheet.write(0, col, h, header_fmt)
+        if not data:
+            return
+
+        from collections import defaultdict
+        # 先按文件分组，再按变量名+行号分组
+        file_group = defaultdict(list)
+        for row in data:
+            file_group[row[0]].append(row)
+
+        row_idx = 1
+        for file_path in sorted(file_group.keys()):
+            file_rows = file_group[file_path]
+            # 按变量名+行号分组
+            var_group = defaultdict(list)
+            for row in file_rows:
+                var_group[(row[1], row[2])].append(row)
+            var_items = sorted(var_group.items(), key=lambda x: (x[0][0], int(x[0][1]) if str(x[0][1]).isdigit() else 0))
+            file_row_start = row_idx
+            for (var_name, line_no), rows in var_items:
+                n = len(rows)
+                # 合并变量名和行号
+                worksheet.merge_range(row_idx, 1, row_idx + n - 1, 1, var_name, border_fmt)
+                worksheet.merge_range(row_idx, 2, row_idx + n - 1, 2, line_no, border_fmt)
+                for i, row in enumerate(rows):
+                    worksheet.write(row_idx + i, 3, row[3], border_fmt)
+                    worksheet.write(row_idx + i, 4, row[4], border_fmt)
+                    worksheet.write(row_idx + i, 5, row[5], border_fmt)
+                row_idx += n
+            # 合并文件名
+            worksheet.merge_range(file_row_start, 0, row_idx - 1, 0, file_path, border_fmt)
+
+    write_sheet("Only_in_A", data_A)
+    write_sheet("Only_in_B", data_B)
+    workbook.close()
+    return output_xlsx
+
+
+label_meanings = {
+    "module_event_no": "Module Event number in the entire Execution Stack, representing the order of Module Events being executed.",
+    "module_name": "Name of the module where the event occurred.",
+    "execution_sequence_slice": "Slice of the execution sequence, indicating the range of Line Event numbers contained by this Event.",
+    "unique_to_this_feature": "Indicates whether this Event only showed up in the script with this feature enabled.",
+    "associated_func_events": "Hyperlink to the Function Event sheet, which shows all Function Events associated with this Module Event.",
+
+    "func_event_no": "Function Event number in the entire Execution Stack, representing the order of Function Events being executed.",
+    "func_name": "Name of the Function where the event occurred.",
+    "file_path": "File path where the event occurred.",
+    "within_module_event_": "Indicates whether this Function Event is within the context of the Module Event identified by the label.",
+    "associated_line_events": "Hyperlink to the Line Event sheet, which shows all Line Events associated with this Function Event.",
+
+    "event_no": "Event number in the entire Execution Stack, representing the order of Line Events being executed.",
+    "event_type": "Type of the event, one of the following: 'LINE', 'CALL', 'RETURN', 'EXCEPTION'.",
+    "call_depth": "Call depth of the event, indicating how deep the call stack is at this point.",
+    "module_event_no": "Module Event number associated with this Line Event, conceptually linking it to the Module Event sheet.",
+    "function_event_no": "Function Event number associated with this Line Event, conceptually linking it to the Function Event sheet.",
+    "line_no": "Line number in the python file where the Line Event occurred.",
+    "line_content": "Code content of the Line Event.",
+    "variable": "Variable being modified or assigned value to with this Line Event, if any.",
+    # considering changing the dep.variable meaning to "variables whose value **this line** depends on, blabla"
+    "dep.variable": "Variables whose value the variable in the left depends on, showing inline dependencies and all dependencies within the file.",
+    "within_func_event_": "Indicates whether this Line Event is within the context of the Function Event identified by the label.",
+
+    "back to module granularity": "Hyperlink to the Module Granularity sheet, which shows all Module Events.",
+    "back to function granularity": "Hyperlink to the Function Granularity sheet, which shows all Function Events. While highlighting the current context.",
+}
+
+def extract_unique_functions(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_path):
+    """
+    对比两个 execution_stack，提取出只在 exec_stack1 中出现而未在 exec_stack0 中出现的 functions，
+    并提取这些 functions 的依赖关系（只保留在 unique set 中的 function names），
+    最后将结果保存为 json 文件。
+    """
+    
+    # === Helper function to collect unique functions from stack ===
+    def get_functions_from_stack(stack_json):
+        # returns { (file_path, function_name): line_no }
+        
+        funcs = {} # Key: (file, func_name), Value: line_no
+        
+        stack_list = stack_json.get("execution_stack", []) if isinstance(stack_json, dict) else stack_json
+        
+        def traverse(events):
+            for event in events:
+                details = event.get("details", {})
+                file_path = details.get("file_path")
+                func_name = details.get("func")
+                line_no = details.get("line_no")
+                
+                if file_path and func_name: 
+                    key = (file_path, func_name)
+                    if key not in funcs:
+                        funcs[key] = line_no # store the line number of first occurrence in trace
+                
+                if "daughter_stack" in details:
+                    traverse(details["daughter_stack"])
+        
+        traverse(stack_list)
+        return funcs
+
+    funcs0 = get_functions_from_stack(exec_stack0)
+    funcs1 = get_functions_from_stack(exec_stack1)
+    
+    # Identify unique functions (in 1 but not 0)
+    unique_keys = set(funcs1.keys()) - set(funcs0.keys())
+    
+    # Create function objects map for easy dependency linking
+    # Schema: { (file, func): { "str_id": "func_name", "obj": {...} } }
+    unique_funcs_map = {}
+    
+    for key in unique_keys:
+        file_path, func_name = key
+        line_no = funcs1[key]
+        
+        func_obj = {
+            "file_path": file_path,
+            "line_number": str(line_no),
+            "function_name": func_name
+        }
+        unique_funcs_map[key] = func_obj
+
+    # If no unique functions, write empty list and return
+    if not unique_funcs_map:
+        output_file = os.path.join(output_path, "unique_functions.json")
+        with open(output_file, 'w') as f:
+            json.dump([], f, indent=4)
+        return
+
+
+
+    # Convert to list
+    final_list = list(unique_funcs_map.values())
+    
+    output_file = os.path.join(output_path, "unique_functions.json")
+    with open(output_file, 'w') as f:
+        json.dump(final_list, f, indent=4)
+        
+    print(f"\n\nSuccess! list length: {len(final_list)}\n\nUnique functions extracted to {output_file}\n")

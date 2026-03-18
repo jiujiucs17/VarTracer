@@ -4,10 +4,26 @@ import linecache
 import sysconfig
 import pkgutil
 import json
-from tqdm import tqdm
+import ast
 from datetime import datetime
 
-from .ASTParser import LineDependencyAnalyzer, DependencyTree
+try:
+    from tqdm import tqdm
+except ImportError:
+    class _NoOpTqdm:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def update(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            pass
+
+    def tqdm(*args, **kwargs):
+        return _NoOpTqdm()
+
+from .ASTParser import DependencyTree, LineDependencyAnalyzer
 from .Utilities import *
 
 
@@ -20,6 +36,8 @@ class VarTracer:
         self.log_trace_progess = True  
         self.exec_stack = None # save processed execution stack in json format
         self.dep_tree = None  # save the dependency tree in json format
+        self._statement_cache = {}
+        self._internal_package_root = os.path.abspath(os.path.dirname(__file__))
 
         # Set the parameters
         self.only_project_root = os.path.abspath(only_project_root) if only_project_root else None
@@ -105,9 +123,12 @@ class VarTracer:
         ])
 
     def _trace(self, frame, event, arg):
+        filename = os.path.abspath(frame.f_code.co_filename)
         # 提取出当前 module name 的顶层名字
         module_name = frame.f_globals.get('__name__', None)
         root_module = module_name.split('.')[0] if module_name else None
+        if module_name and module_name.startswith("VarTracer") and filename.startswith(self._internal_package_root):
+            return None
         # 过滤掉标准库模块、frozen 模块和其他需要忽略的模块
         if root_module in self.ignored_modules:
             # print(f"Trace: Ignoring standard library module: {module_name}")
@@ -178,6 +199,51 @@ class VarTracer:
         """
         analyzer = LineDependencyAnalyzer(local_vars, global_vars)
         return analyzer.analyze(line_content)
+
+    def _get_statement_cache(self, filename):
+        filename = os.path.abspath(filename)
+        if filename not in self._statement_cache:
+            cache_entry = {"stmt_nodes": []}
+            try:
+                with open(filename, 'r', encoding='utf-8') as handle:
+                    source = handle.read()
+                tree = ast.parse(source, filename=filename)
+                cache_entry["stmt_nodes"] = [
+                    node for node in ast.walk(tree)
+                    if isinstance(node, ast.stmt) and hasattr(node, "lineno") and hasattr(node, "end_lineno")
+                ]
+            except (OSError, SyntaxError):
+                pass
+            self._statement_cache[filename] = cache_entry
+        return self._statement_cache[filename]
+
+    def _get_statement_node(self, filename, lineno):
+        stmt_nodes = self._get_statement_cache(filename).get("stmt_nodes", [])
+
+        def statement_key(node):
+            end_lineno = getattr(node, "end_lineno", node.lineno)
+            end_col = getattr(node, "end_col_offset", 0)
+            start_col = getattr(node, "col_offset", 0)
+            return (end_lineno - node.lineno, end_col - start_col)
+
+        starting_here = [node for node in stmt_nodes if node.lineno == lineno]
+        if starting_here:
+            return min(starting_here, key=statement_key)
+
+        covering_line = [
+            node for node in stmt_nodes
+            if node.lineno <= lineno <= getattr(node, "end_lineno", node.lineno)
+        ]
+        if covering_line:
+            return min(covering_line, key=statement_key)
+        return None
+
+    def _analyze_line_event(self, filename, lineno, line_content, local_vars, global_vars):
+        stmt_node = self._get_statement_node(filename, lineno)
+        if stmt_node is not None:
+            analyzer = LineDependencyAnalyzer(local_vars, global_vars)
+            return analyzer.analyze_node(stmt_node)
+        return self._analyze_dependencies(line_content, local_vars, global_vars)
 
 
     def start(self):
@@ -360,7 +426,7 @@ class VarTracer:
                     stack.append(return_event)
                     break
                 elif event == 'line':
-                    analysis_result = self._analyze_dependencies(line_content, frame.locals, frame.globals)
+                    analysis_result = self._analyze_line_event(filename, lineno, line_content, frame.locals, frame.globals)
                     dependencies = analysis_result.get("dependencies", set())
                     assigned_vars = analysis_result.get("assigned_vars", set())
 
@@ -425,218 +491,87 @@ class VarTracer:
         self.exec_stack = output_data  # 保存到实例变量中
         return output_data
 
-    def dep_tree_txt(self, output_path, output_name="VTrace_dep_tree.txt", short_path=True):
-        """
-        生成格式清晰、接近表格的 txt 版本依赖树。output_path 必须提供。
-        以文件分组，每个文件一个依赖表格。
-        每个表格的第一列为变量名，第二列为定义行号，第三列为依赖子表格（依赖变量、first occurrence、co-occurrences）。
-        """
-        if output_path is None:
-            raise ValueError("output_path must be provided.")
-    
-        # 如果 dep_tree 为空，先生成
-        if self.dep_tree is None:
-            self.dep_tree_json(output_path=None)
-    
-        dep_tree = self.dep_tree
-        timestamp = dep_tree.get("trace_started_at", "")
-    
-        def shorten_path(path):
-            path = os.path.abspath(path)
-            parts = path.split(os.sep)
-            if len(parts) <= 4:
-                return path
-            return os.sep.join([parts[0], parts[1], '...', parts[-2], parts[-1]])
-    
-        result_lines = []
-        result_lines.append(f"Dependency tree generated at {timestamp}")
-        result_lines.append("=" * 120)
-    
-        for file_path, var_dict in dep_tree.items():
-            if file_path == "trace_started_at":
-                continue
-            file_disp = shorten_path(file_path) if short_path else file_path
-            result_lines.append(f"\nFile: {file_disp}")
-            result_lines.append("-" * 120)
-            result_lines.append(f"{'Variable':<25} | {'Line':<8} | {'Dependencies':<80}")
-            result_lines.append("-" * 120)
-            if not var_dict:
-                result_lines.append(f"{'-':<25} | {'-':<8} | {'-':<80}")
-                continue
-            for var_key, var_info in var_dict.items():
-                var_name = var_info.get("variableName", var_key)
-                line_no = str(var_info.get("lineNumber", "-"))
-                results = var_info.get("results", {})
-                if not results:
-                    result_lines.append(f"{var_name:<25} | {line_no:<8} | {'-':<80}")
-                    continue
-                # 构建依赖子表格
-                dep_lines = []
-                dep_lines.append(f"{'Dep.Var':<20} | {'First Occurrence':<18} | {'Co-occurrences':<35}")
-                dep_lines.append(f"{'-'*20} | {'-'*18} | {'-'*35}")
-                for dep_var, dep_info in results.items():
-                    first_occ = str(dep_info.get("first_occurrence", "-"))
-                    co_occs = dep_info.get("co_occurrences", [])
-                    if isinstance(co_occs, list):
-                        co_occs_str = ", ".join(str(x) for x in co_occs) if co_occs else "-"
-                    else:
-                        co_occs_str = "-"
-                    dep_lines.append(f"{dep_var:<20} | {first_occ:<18} | {co_occs_str:<35}")
-                # 将依赖子表格合并为单个字符串，缩进显示
-                dep_table_str = "\n    ".join(dep_lines)
-                result_lines.append(f"{var_name:<25} | {line_no:<8} | \n    {dep_table_str}")
-            result_lines.append("-" * 120)
-    
-        output = '\n'.join(result_lines)
-    
-        os.makedirs(output_path, exist_ok=True)
-        output_file = os.path.join(output_path, output_name)
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(output)
-        if self.verbose:
-            print(f"Txt dependency tree saved to '{output_file}'")
-    
-        return output
-
-    def dep_tree_xlsx(self, output_path, output_name="VTrace_dep_tree.xlsx", short_path=True):
-        """
-        生成依赖树的 XLSX 文件。以文件分组，每个文件一个 sheet，每个 sheet 是依赖表格。
-        第一列为变量名，第二列为定义行号，第三列为依赖变量，第四列为 first occurrence，第五列为 co-occurrences。
-        Sheet 名如有重复自动编号，例如 __init__.py(1)、__init__.py(2)，并按字母表顺序排列。
-        每个sheet第一行显示完整路径。主变量和行号纵向合并居中。所有表格加边框。
-        """
-        import xlsxwriter
-
-        if output_path is None:
-            raise ValueError("output_path must be provided.")
-
-        # 如果 dep_tree 为空，先生成
-        if self.dep_tree is None:
-            self.dep_tree_json(output_path=None)
-
-        dep_tree = self.dep_tree
-
-        def shorten_path(path):
-            path = os.path.abspath(path)
-            parts = path.split(os.sep)
-            if len(parts) <= 4:
-                return path
-            return os.sep.join([parts[0], parts[1], '...', parts[-2], parts[-1]])
-
-        os.makedirs(output_path, exist_ok=True)
-        output_file = os.path.join(output_path, output_name)
-        workbook = xlsxwriter.Workbook(output_file)
-
-        # 定义带边框的格式
-        border_fmt = workbook.add_format({'border': 1, 'align': 'center', 'valign': 'vcenter'})
-        header_fmt = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-        path_fmt = workbook.add_format({'italic': True, 'border': 1, 'align': 'left', 'valign': 'vcenter'})
-
-        # 收集所有 sheet 信息并排序
-        sheet_infos = []
-        for file_path, var_dict in dep_tree.items():
-            if file_path == "trace_started_at":
-                continue
-            file_disp = shorten_path(file_path) if short_path else file_path
-            base_name = os.path.basename(file_disp)
-            sheet_infos.append((base_name, file_path, var_dict))
-        # 按 base_name 字母表顺序排序
-        sheet_infos.sort(key=lambda x: x[0].lower())
-
-        # 检查 sheet 名称重复并编号
-        sheet_name_count = {}
-        for base_name, file_path, var_dict in sheet_infos:
-            # Excel sheet name max length is 31
-            sheet_name = base_name
-            if len(sheet_name) > 31:
-                sheet_name = sheet_name[-31:]
-            orig_sheet_name = sheet_name
-            count = sheet_name_count.get(orig_sheet_name, 0)
-            while sheet_name in sheet_name_count:
-                count += 1
-                suffix = f"({count})"
-                # 保证加编号后不超长
-                if len(orig_sheet_name) + len(suffix) > 31:
-                    sheet_name = orig_sheet_name[:31 - len(suffix)] + suffix
-                else:
-                    sheet_name = orig_sheet_name + suffix
-            sheet_name_count[orig_sheet_name] = count
-            sheet_name_count[sheet_name] = 0  # 标记已用
-            worksheet = workbook.add_worksheet(sheet_name)
-
-            # 第一行写完整路径
-            worksheet.write(0, 0, file_path, path_fmt)
-
-            # 第二行写表头
-            worksheet.write(1, 0, "Variable", header_fmt)
-            worksheet.write(1, 1, "Line", header_fmt)
-            worksheet.write(1, 2, "Dep.Var", header_fmt)
-            worksheet.write(1, 3, "First Occurrence", header_fmt)
-            worksheet.write(1, 4, "Co-occurrences", header_fmt)
-
-            row = 2
-            if not var_dict:
-                for col in range(5):
-                    worksheet.write(row, col, "-", border_fmt)
-                continue
-            for var_key, var_info in var_dict.items():
-                var_name = var_info.get("variableName", var_key)
-                line_no = str(var_info.get("lineNumber", "-"))
-                results = var_info.get("results", {})
-                dep_items = list(results.items()) if results else []
-                dep_count = len(dep_items) if dep_items else 1
-
-                # 合并主变量和行号的单元格
-                worksheet.merge_range(row, 0, row + dep_count - 1, 0, var_name, border_fmt)
-                worksheet.merge_range(row, 1, row + dep_count - 1, 1, line_no, border_fmt)
-
-                if not dep_items:
-                    worksheet.write(row, 2, "-", border_fmt)
-                    worksheet.write(row, 3, "-", border_fmt)
-                    worksheet.write(row, 4, "-", border_fmt)
-                    row += 1
-                    continue
-
-                for i, (dep_var, dep_info) in enumerate(dep_items):
-                    first_occ = str(dep_info.get("first_occurrence", "-"))
-                    co_occs = dep_info.get("co_occurrences", [])
-                    if isinstance(co_occs, list):
-                        co_occs_str = ", ".join(str(x) for x in co_occs) if co_occs else "-"
-                    else:
-                        co_occs_str = "-"
-                    worksheet.write(row, 2, dep_var, border_fmt)
-                    worksheet.write(row, 3, first_occ, border_fmt)
-                    worksheet.write(row, 4, co_occs_str, border_fmt)
-                    row += 1
-
-        workbook.close()
-        if self.verbose:
-            print(f"XLSX dependency tree saved to '{output_file}'")
-        return output_file
-
     def dep_tree_json(self, output_path=None, output_name="VTrace_dep_tree.json", show_progress=False):
-            """
-            生成依赖树的 JSON 文件。如果 self.dep_tree 为空，则根据 self.exec_stack 生成。
-            返回 self.dep_tree。
-            """
-            if self.dep_tree is None:
-                # 如果 exec_stack 为空，先生成
-                if self.exec_stack is None:
-                    self.exec_stack_json(output_path=None, show_progress=show_progress)
-                # 构建依赖树
-                dep_tree_parser = DependencyTree(call_stack=json.dumps(self.exec_stack))
-                self.dep_tree = dep_tree_parser.parse_dependency()
+        """
+        生成面向 LLM 的依赖图 JSON 文件。如果 self.dep_tree 为空，则根据
+        self.exec_stack 生成。
+        """
+        if self.dep_tree is None:
+            if self.exec_stack is None:
+                self.exec_stack_json(output_path=None, show_progress=show_progress)
+            dep_tree_parser = DependencyTree(call_stack=json.dumps(self.exec_stack))
+            self.dep_tree = dep_tree_parser.parse_dependency()
+        elif "_comment" not in self.dep_tree:
+            self.dep_tree = {
+                "_comment": (
+                    "How to read this graph: symbols[id]=[kind,name,scope,file_id,line]; "
+                    "edges=[source_symbol_id,target_symbol_id,edge_kind,line,hits]; "
+                    "paths[sink_symbol_id] lists dependency paths that end at that sink."
+                ),
+                **self.dep_tree,
+            }
 
-            # 输出到文件
-            if output_path:
-                os.makedirs(output_path, exist_ok=True)
-                output_file = os.path.join(output_path, output_name)
-                with open(output_file, 'w', encoding='utf-8') as f:
-                    json.dump(self.dep_tree, f, indent=4)
-                if self.verbose:
-                    print(f"Dependency tree JSON saved to '{output_file}'")
+        if output_path:
+            os.makedirs(output_path, exist_ok=True)
+            output_file = os.path.join(output_path, output_name)
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(self.dep_tree, f, indent=4)
+            if self.verbose:
+                print(f"Dependency tree JSON saved to '{output_file}'")
 
-            return self.dep_tree
+        return self.dep_tree
+
+    def dep_tree_edgelist(self, output_path=None, output_name="VTrace_dep_tree.edgelist", show_progress=False):
+        """
+        将 dep_tree_json() 进一步压缩为便于直接发送给 LLM 的 edge-list 文本。
+        """
+        dep_tree = self.dep_tree_json(output_path=None, show_progress=show_progress)
+        symbols = dep_tree.get("symbols", {})
+        files = dep_tree.get("files", {})
+        multi_file = len(files) > 1
+
+        def format_symbol(symbol_id):
+            kind, name, scope, file_id, _line_no = symbols[symbol_id]
+            label = f"{scope}::{name}"
+            if multi_file:
+                file_label = os.path.basename(files.get(file_id, file_id))
+                label = f"{file_label}::{label}"
+            return f"{label}<{kind}>"
+
+        lines = [
+            "# Read as: EDGE src -> dst [kind@line xhits]; PATH sink <= source -> ... -> sink.",
+            "# src/dst use scope::name<kind>; file basename is prefixed only when multiple files appear.",
+        ]
+        for src, dst, kind, line_no, hits in dep_tree.get("edges", []):
+            hit_suffix = f" x{hits}" if hits > 1 else ""
+            lines.append(
+                f"EDGE {format_symbol(src)} -> {format_symbol(dst)} [{kind}@{line_no}{hit_suffix}]"
+            )
+
+        for sink_id, sink_paths in dep_tree.get("paths", {}).items():
+            for path in sink_paths:
+                rendered = " -> ".join(format_symbol(symbol_id) for symbol_id in path)
+                lines.append(f"PATH {format_symbol(sink_id)} <= {rendered}")
+
+        output_text = "\n".join(lines)
+
+        if output_path:
+            os.makedirs(output_path, exist_ok=True)
+            output_file = os.path.join(output_path, output_name)
+            with open(output_file, "w", encoding="utf-8") as handle:
+                handle.write(output_text)
+            if self.verbose:
+                print(f"Dependency edge-list saved to '{output_file}'")
+
+        return output_text
+
+    def edgelist(self, output_path=None, output_name="VTrace_dep_tree.edgelist", show_progress=False):
+        """Alias for dep_tree_edgelist()."""
+        return self.dep_tree_edgelist(
+            output_path=output_path,
+            output_name=output_name,
+            show_progress=show_progress,
+        )
     
 class FileVTracer:
     def __init__(self, filepath, verbose=False):
@@ -739,4 +674,3 @@ if __name__ == "__main__":
 
 
         
-
