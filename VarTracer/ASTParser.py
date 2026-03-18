@@ -3,6 +3,84 @@ import json
 import os
 from collections import defaultdict
 
+DEPENDENCY_GRAPH_COMMENT = {
+    "overview": (
+        "This JSON is a compact data-dependency graph. Resolve symbol ids through `symbols`, "
+        "then use `edges` and `paths` to reconstruct how values flow."
+    ),
+    "fields": {
+        "version": "Schema version for this dependency-graph format. It helps downstream tools detect breaking changes.",
+        "trace_started_at": "Timestamp captured when tracing started. It is metadata only and is not part of the dependency graph itself.",
+        "files": (
+            "Map from short file ids such as `f1` to absolute file paths. "
+            "Other fields refer to files through these ids to reduce repetition."
+        ),
+        "symbols": (
+            "Map from short symbol ids such as `s3` to `[kind,name,scope,file_id,line]`. "
+            "Each symbol is one node in the graph and usually represents a definition, parameter, or unresolved reference."
+        ),
+        "symbols.kind": (
+            "Category of symbol. Possible values: `var` = ordinary assigned variable; `param` = function parameter; "
+            "`func` = function definition symbol; `class` = class definition symbol; `attr` = attribute-like symbol such as "
+            "`obj.attr` or an unresolved chained-call name; `subscript` = subscript write target such as `items[]`; "
+            "`ref` = external or unresolved reference with no resolved local definition site."
+        ),
+        "symbols.name": (
+            "Raw symbol name captured from tracing and AST dependency analysis. "
+            "This is the main human-readable label you should show in explanations."
+        ),
+        "symbols.scope": (
+            "Function-like scope where the symbol is defined or referenced. "
+            "`<module>` means module top level."
+        ),
+        "symbols.file_id": (
+            "Short file id pointing back to `files`. "
+            "Use it to recover the concrete file path for this symbol."
+        ),
+        "symbols.line": (
+            "Line associated with this symbol. "
+            "`0` means no concrete in-file definition line could be resolved."
+        ),
+        "edges": (
+            "List of direct dependency edges stored as `[source_symbol_id,target_symbol_id,edge_kind,line,hits]`. "
+            "Each row means the target value directly depends on the source."
+        ),
+        "edges.source_symbol_id": (
+            "Upstream dependency node. "
+            "Resolve it through `symbols[source_symbol_id]`."
+        ),
+        "edges.target_symbol_id": (
+            "Downstream node whose value is produced or updated on this step. "
+            "Resolve it through `symbols[target_symbol_id]`."
+        ),
+        "edges.edge_kind": (
+            "Type of direct dependency edge. Possible values: `data` = ordinary data dependency from a read value; "
+            "`arg` = dependency coming from a function-parameter symbol; `call` = dependency on a function symbol used as a call target; "
+            "`ctor` = dependency on a class symbol used as a constructor call."
+        ),
+        "edges.line": (
+            "Line where this direct dependency was observed while building the target symbol. "
+            "This is usually the target assignment line."
+        ),
+        "edges.hits": (
+            "Dynamic occurrence count for this exact edge tuple. "
+            "Values greater than 1 usually mean the same dependency was seen repeatedly, for example inside loops."
+        ),
+        "paths": (
+            "Map from `sink_symbol_id` to lists of dependency chains. "
+            "Each chain is ordered from upstream source to downstream sink and is meant to make end-to-end flow easier to explain."
+        ),
+        "paths.sink_symbol_id": (
+            "Terminal symbol whose value you want to explain. "
+            "The corresponding value is a list of paths that all end at this symbol."
+        ),
+        "paths[*]": (
+            "One dependency path represented as a list of symbol ids. "
+            "Read it from left to right as source-to-sink flow."
+        ),
+    },
+}
+
 class LineDependencyAnalyzer(ast.NodeVisitor):
     def __init__(self, local_vars, global_vars):
         self.local_vars = set(local_vars)
@@ -482,11 +560,7 @@ class DependencyTree:
         source_index = self._build_source_index()
 
         graph = {
-            "_comment": (
-                "How to read this graph: symbols[id]=[kind,name,scope,file_id,line]; "
-                "edges=[source_symbol_id,target_symbol_id,edge_kind,line,hits]; "
-                "paths[sink_symbol_id] lists dependency paths that end at that sink."
-            ),
+            "_comment": DEPENDENCY_GRAPH_COMMENT,
             "version": "ddg.v2",
             "trace_started_at": self.call_stack.get("trace_started_at"),
             "files": {file_id: path for path, file_id in file_ids.items()},

@@ -23,7 +23,7 @@ except ImportError:
     def tqdm(*args, **kwargs):
         return _NoOpTqdm()
 
-from .ASTParser import DependencyTree, LineDependencyAnalyzer
+from .ASTParser import DEPENDENCY_GRAPH_COMMENT, DependencyTree, LineDependencyAnalyzer
 from .Utilities import *
 
 
@@ -503,11 +503,7 @@ class VarTracer:
             self.dep_tree = dep_tree_parser.parse_dependency()
         elif "_comment" not in self.dep_tree:
             self.dep_tree = {
-                "_comment": (
-                    "How to read this graph: symbols[id]=[kind,name,scope,file_id,line]; "
-                    "edges=[source_symbol_id,target_symbol_id,edge_kind,line,hits]; "
-                    "paths[sink_symbol_id] lists dependency paths that end at that sink."
-                ),
+                "_comment": DEPENDENCY_GRAPH_COMMENT,
                 **self.dep_tree,
             }
 
