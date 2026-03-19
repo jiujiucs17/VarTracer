@@ -849,7 +849,7 @@ label_meanings = {
     "back to function granularity": "Hyperlink to the Function Granularity sheet, which shows all Function Events. While highlighting the current context.",
 }
 
-def extract_unique_functions(exec_stack0, exec_stack1, output_path):
+def extract_unique_functions(exec_stack0, exec_stack1, output_path, generate_llm_txt=False):
     """
     对比两个 execution trace，输出 trace A 相对于 trace B 的 unique modules/files/functions。
 
@@ -857,6 +857,7 @@ def extract_unique_functions(exec_stack0, exec_stack1, output_path):
     - exec_stack0: execution trace A（feature positive）
     - exec_stack1: execution trace B（feature negative）
     - output_path: 输出目录
+    - generate_llm_txt: 默认为 False。为 True 时，额外生成一个压缩后的 LLM 文本文件
 
     兼容以下输入形式：
     - {"execution_stack": [...]}
@@ -864,7 +865,8 @@ def extract_unique_functions(exec_stack0, exec_stack1, output_path):
     - 直接传入 execution_stack 列表
 
     输出文件：
-    - {output_path}/unique_functions.json
+    - {output_path}/unique_artifacts.json
+    - {output_path}/unique_artifacts.txt（仅当 generate_llm_txt=True）
 
     输出 JSON 结构：
     {
@@ -898,6 +900,109 @@ def extract_unique_functions(exec_stack0, exec_stack1, output_path):
             return os.path.relpath(path, os.getcwd())
         except ValueError:
             return path
+
+    def compact_json(value):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    def compact_bool(value):
+        return 1 if value else 0
+
+    def compact_samples(samples):
+        packed = []
+        for sample in samples:
+            line_no = sample.get("line_number")
+            line_content = str(sample.get("line_content", "")).replace("\n", "\\n")
+            packed.append(f"{line_no}:{line_content}")
+        return packed
+
+    def build_llm_text(payload):
+        comparison = payload.get("comparison", {})
+        lines = [
+            "# Read as: CMP comparison; MOD unique module; FIL unique file; FUN unique function.",
+            (
+                "# Key map: "
+                "a=trace_a_role,b=trace_b_role,rel=comparison_type,"
+                "um/uf/ufn=unique counts,"
+                "n=name,module_name,q=qualified_name,top=is_top_level_script,"
+                "p=path,rp=relative_path,bn=file_name,"
+                "fps=file_paths,bns=file_names,mods=module_names,fns=function_names,"
+                "fc/file_count,mc/module_count,fnc=function_count,"
+                "def=defined_line_number,end=end_line_number,"
+                "type=definition_type,cls=class_name,parent=parent_scope,"
+                "async=is_async,src=definition_found_in_source,"
+                "first=first_seen_line_number,obs=observed_line_numbers,"
+                "ev=event_count,cal/call=line-call counts,ret=return_count,exc=exception_count,"
+                "dep=max_call_depth,smp=sample_executed_lines"
+            ),
+            "CMP " + compact_json({
+                "a": comparison.get("trace_a_role"),
+                "b": comparison.get("trace_b_role"),
+                "rel": comparison.get("comparison_type"),
+                "um": comparison.get("unique_module_count"),
+                "uf": comparison.get("unique_file_count"),
+                "ufn": comparison.get("unique_function_count"),
+            }),
+        ]
+
+        for record in payload.get("unique_modules", []):
+            lines.append("MOD " + compact_json({
+                "n": record.get("module_name"),
+                "top": compact_bool(record.get("is_top_level_script")),
+                "fps": record.get("file_paths", []),
+                "bns": record.get("file_names", []),
+                "fns": record.get("function_names", []),
+                "fc": record.get("file_count"),
+                "fnc": record.get("function_count"),
+                "ev": record.get("event_count_in_trace_a"),
+                "ln": record.get("line_event_count_in_trace_a"),
+                "cal": record.get("call_event_count_in_trace_a"),
+                "dep": record.get("max_call_depth"),
+                "first": record.get("first_seen_line_number"),
+            }))
+
+        for record in payload.get("unique_files", []):
+            lines.append("FIL " + compact_json({
+                "p": record.get("path"),
+                "rp": record.get("relative_path"),
+                "bn": record.get("file_name"),
+                "mods": record.get("module_names", []),
+                "fns": record.get("function_names", []),
+                "mc": record.get("module_count"),
+                "fnc": record.get("function_count"),
+                "ev": record.get("event_count_in_trace_a"),
+                "ln": record.get("line_event_count_in_trace_a"),
+                "cal": record.get("call_event_count_in_trace_a"),
+                "dep": record.get("max_call_depth"),
+                "first": record.get("first_seen_line_number"),
+            }))
+
+        for record in payload.get("unique_functions", []):
+            lines.append("FUN " + compact_json({
+                "n": record.get("name"),
+                "q": record.get("qualified_name"),
+                "mod": record.get("module_name"),
+                "p": record.get("path"),
+                "rp": record.get("relative_path"),
+                "bn": record.get("file_name"),
+                "def": record.get("defined_line_number"),
+                "end": record.get("end_line_number"),
+                "type": record.get("definition_type"),
+                "cls": record.get("class_name"),
+                "parent": record.get("parent_scope"),
+                "async": compact_bool(record.get("is_async")),
+                "src": compact_bool(record.get("definition_found_in_source")),
+                "first": record.get("first_seen_line_number"),
+                "obs": record.get("observed_line_numbers", []),
+                "ev": record.get("event_count_in_trace_a"),
+                "call": record.get("call_count_in_trace_a"),
+                "line": record.get("line_event_count_in_trace_a"),
+                "ret": record.get("return_count_in_trace_a"),
+                "exc": record.get("exception_count_in_trace_a"),
+                "dep": record.get("max_call_depth"),
+                "smp": compact_samples(record.get("sample_executed_lines", [])),
+            }))
+
+        return "\n".join(lines)
 
     definition_cache = {}
 
@@ -1249,10 +1354,17 @@ def extract_unique_functions(exec_stack0, exec_stack1, output_path):
         ],
     }
 
-    os.makedirs(output_path, exist_ok=True)
-    output_file = os.path.join(output_path, "unique_artifacts.json")
+    output_dir = output_path or os.getcwd()
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, "unique_artifacts.json")
     with open(output_file, "w", encoding="utf-8") as handle:
         json.dump(result_payload, handle, indent=4, ensure_ascii=False)
+
+    llm_output_file = None
+    if generate_llm_txt:
+        llm_output_file = os.path.join(output_dir, "unique_artifacts.txt")
+        with open(llm_output_file, "w", encoding="utf-8") as handle:
+            handle.write(build_llm_text(result_payload))
 
     print(
         "\n\nSuccess! "
@@ -1260,5 +1372,10 @@ def extract_unique_functions(exec_stack0, exec_stack1, output_path):
         f"files={len(result_payload['unique_files'])}, "
         f"functions={len(result_payload['unique_functions'])}\n\n"
         f"Unique trace summary extracted to {output_file}\n"
+        + (
+            f"LLM-ready text extracted to {llm_output_file}\n"
+            if llm_output_file
+            else ""
+        )
     )
     return result_payload
