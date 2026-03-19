@@ -66,6 +66,37 @@ def _dep_tree_incoming_edges(dep_tree):
 def _dep_tree_symbol_label(record):
     return f"{record['scope']}::{record['name']}"
 
+
+def _dep_tree_to_edgelist_text(dep_tree):
+    symbols = dep_tree.get("symbols", {})
+    files = dep_tree.get("files", {})
+    multi_file = len(files) > 1
+
+    def format_symbol(symbol_id):
+        kind, name, scope, file_id, _line_no = symbols[symbol_id]
+        label = f"{scope}::{name}"
+        if multi_file:
+            file_label = os.path.basename(files.get(file_id, file_id))
+            label = f"{file_label}::{label}"
+        return f"{label}<{kind}>"
+
+    lines = [
+        "# Read as: EDGE src -> dst [kind@line xhits]; PATH sink <= source -> ... -> sink.",
+        "# src/dst use scope::name<kind>; file basename is prefixed only when multiple files appear.",
+    ]
+    for src, dst, kind, line_no, hits in dep_tree.get("edges", []):
+        hit_suffix = f" x{hits}" if hits > 1 else ""
+        lines.append(
+            f"EDGE {format_symbol(src)} -> {format_symbol(dst)} [{kind}@{line_no}{hit_suffix}]"
+        )
+
+    for sink_id, sink_paths in dep_tree.get("paths", {}).items():
+        for path in sink_paths:
+            rendered = " -> ".join(format_symbol(symbol_id) for symbol_id in path)
+            lines.append(f"PATH {format_symbol(sink_id)} <= {rendered}")
+
+    return "\n".join(lines)
+
 class FrameSnapshot:
     def __init__(self, frame):
         self.file_name = frame.f_code.co_filename
@@ -849,13 +880,13 @@ label_meanings = {
     "back to function granularity": "Hyperlink to the Function Granularity sheet, which shows all Function Events. While highlighting the current context.",
 }
 
-def extract_unique_functions(exec_stack0, exec_stack1, output_path, generate_llm_txt=False):
+def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate_llm_txt=False):
     """
     对比两个 execution trace，输出 trace A 相对于 trace B 的 unique modules/files/functions。
 
     参数约定：
-    - exec_stack0: execution trace A（feature positive）
-    - exec_stack1: execution trace B（feature negative）
+    - exec_stack_1: execution trace A（feature positive）
+    - exec_stack_0: execution trace B（feature negative）
     - output_path: 输出目录
     - generate_llm_txt: 默认为 False。为 True 时，额外生成一个压缩后的 LLM 文本文件
 
@@ -1321,8 +1352,8 @@ def extract_unique_functions(exec_stack0, exec_stack1, output_path, generate_llm
 
         return state
 
-    trace_a_summary = build_trace_summary(exec_stack0)
-    trace_b_summary = build_trace_summary(exec_stack1)
+    trace_a_summary = build_trace_summary(exec_stack_1)
+    trace_b_summary = build_trace_summary(exec_stack_0)
 
     unique_module_names = sorted(set(trace_a_summary["modules"]) - set(trace_b_summary["modules"]))
     unique_file_paths = sorted(set(trace_a_summary["files"]) - set(trace_b_summary["files"]))
@@ -1330,6 +1361,22 @@ def extract_unique_functions(exec_stack0, exec_stack1, output_path, generate_llm
         set(trace_a_summary["functions"]) - set(trace_b_summary["functions"]),
         key=lambda item: (item[0], item[3], item[2]),
     )
+    unique_file_path_set = set(unique_file_paths)
+
+    unique_module_records = []
+    for module_name in unique_module_names:
+        module_record = dict(trace_a_summary["modules"][module_name])
+        module_file_paths = module_record.get("file_paths", [])
+        filtered_file_paths = [
+            file_path for file_path in module_file_paths
+            if file_path in unique_file_path_set
+        ]
+        module_record["file_paths"] = filtered_file_paths
+        module_record["file_names"] = [
+            os.path.basename(file_path) for file_path in filtered_file_paths
+        ]
+        module_record["file_count"] = len(filtered_file_paths)
+        unique_module_records.append(module_record)
 
     result_payload = {
         "comparison": {
@@ -1340,10 +1387,7 @@ def extract_unique_functions(exec_stack0, exec_stack1, output_path, generate_llm
             "unique_file_count": len(unique_file_paths),
             "unique_function_count": len(unique_function_keys),
         },
-        "unique_modules": [
-            trace_a_summary["modules"][module_name]
-            for module_name in unique_module_names
-        ],
+        "unique_modules": unique_module_records,
         "unique_files": [
             trace_a_summary["files"][file_path]
             for file_path in unique_file_paths
@@ -1354,7 +1398,7 @@ def extract_unique_functions(exec_stack0, exec_stack1, output_path, generate_llm
         ],
     }
 
-    output_dir = output_path or os.getcwd()
+    output_dir = output_folder or os.getcwd()
     os.makedirs(output_dir, exist_ok=True)
     output_file = os.path.join(output_dir, "unique_artifacts.json")
     with open(output_file, "w", encoding="utf-8") as handle:
@@ -1379,3 +1423,191 @@ def extract_unique_functions(exec_stack0, exec_stack1, output_path, generate_llm
         )
     )
     return result_payload
+
+
+def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folder, generate_llm_txt=False):
+    """
+    根据 extract_unique_functions() 生成的 unique_artifacts.json，对 feature-positive 的 dep_tree 做裁剪。
+
+    参数：
+    - unique_artifacts: unique_artifacts.json 的路径，或其已加载的 dict
+    - dep_tree: feature-positive 对应 dep_tree json 的路径，或其已加载的 dict
+    - output_folder: 输出目录
+    - generate_llm_txt: 默认为 False。为 True 时，额外生成 edge-list 文本版本
+
+    裁剪规则：
+    1. 先根据 unique_artifacts 中出现的 module/file/function，在 dep_tree["paths"] 中找相关 path。
+    2. 只保留命中的 path。
+    3. 再根据被保留 path 中实际用到的 files/symbols/edges，反向精简 dep_tree 其余内容。
+
+    输出文件：
+    - {output_path}/unique_artifacts_dep_tree.json
+    - {output_path}/unique_artifacts_dep_tree_edgelist.txt（仅当 generate_llm_txt=True）
+    """
+
+    def load_json_like(value, name):
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            with open(value, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        raise TypeError(f"{name} must be a dict or a JSON file path.")
+
+    def safe_int_local(value):
+        try:
+            if value in (None, ""):
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def normalize_scope(value):
+        return "" if value is None else str(value)
+
+    def build_function_matchers(artifacts_json):
+        matchers = []
+        for record in artifacts_json.get("unique_functions", []):
+            matchers.append({
+                "path": record.get("path"),
+                "name": record.get("name"),
+                "defined_line_number": safe_int_local(record.get("defined_line_number")),
+                "parent_scope": normalize_scope(record.get("parent_scope")),
+                "class_name": normalize_scope(record.get("class_name")),
+            })
+        return matchers
+
+    def symbol_matches_function(record, matcher):
+        if matcher.get("path") and record.get("file_path") != matcher.get("path"):
+            return False
+
+        symbol_kind = record.get("kind")
+        symbol_name = record.get("name")
+        symbol_scope = normalize_scope(record.get("scope"))
+        symbol_line = safe_int_local(record.get("line"))
+
+        target_name = matcher.get("name")
+        target_line = matcher.get("defined_line_number")
+        parent_scope = matcher.get("parent_scope")
+        class_scope = matcher.get("class_name")
+
+        # 函数体内部的变量、参数、ref/attr 等符号通常都以函数名作为 scope。
+        if symbol_scope == target_name:
+            return True
+
+        # 函数定义自身在 dep_tree 中通常表现为 kind=func，scope 为其父作用域（如 <module> 或类名）。
+        if symbol_kind == "func" and symbol_name == target_name:
+            if target_line is not None and symbol_line is not None and symbol_line != target_line:
+                return False
+            valid_parent_scopes = {parent_scope, class_scope}
+            valid_parent_scopes.discard("")
+            if not valid_parent_scopes:
+                return symbol_scope in {"", "<module>"}
+            return symbol_scope in valid_parent_scopes
+
+        return False
+
+    artifacts_json = load_json_like(unique_artifacts, "unique_artifacts")
+    dep_tree_json = load_json_like(dep_tree, "dep_tree")
+    output_dir = output_folder or os.getcwd()
+
+    symbol_records = _dep_tree_symbol_records(dep_tree_json)
+    dep_tree_paths = dep_tree_json.get("paths", {})
+
+    target_file_paths = set()
+    for record in artifacts_json.get("unique_modules", []):
+        target_file_paths.update(record.get("file_paths", []))
+    for record in artifacts_json.get("unique_files", []):
+        if record.get("path"):
+            target_file_paths.add(record["path"])
+
+    function_matchers = build_function_matchers(artifacts_json)
+
+    def symbol_matches_target(symbol_id):
+        record = symbol_records.get(symbol_id)
+        if not record:
+            return False
+        if record.get("file_path") in target_file_paths:
+            return True
+        return any(symbol_matches_function(record, matcher) for matcher in function_matchers)
+
+    retained_paths = {}
+    retained_symbol_ids = set()
+    retained_edge_pairs = set()
+
+    for sink_id, sink_paths in dep_tree_paths.items():
+        matched_paths = []
+        for path in sink_paths:
+            if any(symbol_matches_target(symbol_id) for symbol_id in path):
+                matched_paths.append(path)
+                retained_symbol_ids.update(path)
+                for index in range(len(path) - 1):
+                    retained_edge_pairs.add((path[index], path[index + 1]))
+        if matched_paths:
+            retained_paths[sink_id] = matched_paths
+
+    retained_edges = [
+        edge for edge in dep_tree_json.get("edges", [])
+        if len(edge) >= 2
+        and edge[0] in retained_symbol_ids
+        and edge[1] in retained_symbol_ids
+        and (edge[0], edge[1]) in retained_edge_pairs
+    ]
+
+    retained_file_ids = {
+        symbol_records[symbol_id]["file_id"]
+        for symbol_id in retained_symbol_ids
+        if symbol_id in symbol_records and symbol_records[symbol_id].get("file_id")
+    }
+
+    filtered_dep_tree = {}
+    for key in ("_comment", "version", "trace_started_at"):
+        if key in dep_tree_json:
+            filtered_dep_tree[key] = dep_tree_json[key]
+
+    filtered_dep_tree["files"] = {
+        file_id: file_path
+        for file_id, file_path in dep_tree_json.get("files", {}).items()
+        if file_id in retained_file_ids
+    }
+    filtered_dep_tree["symbols"] = {
+        symbol_id: symbol_meta
+        for symbol_id, symbol_meta in dep_tree_json.get("symbols", {}).items()
+        if symbol_id in retained_symbol_ids
+    }
+    filtered_dep_tree["edges"] = retained_edges
+    filtered_dep_tree["paths"] = retained_paths
+    filtered_dep_tree["filter_summary"] = {
+        "source_unique_module_count": len(artifacts_json.get("unique_modules", [])),
+        "source_unique_file_count": len(artifacts_json.get("unique_files", [])),
+        "source_unique_function_count": len(artifacts_json.get("unique_functions", [])),
+        "matched_path_count": sum(len(paths) for paths in retained_paths.values()),
+        "matched_sink_count": len(retained_paths),
+        "retained_file_count": len(filtered_dep_tree["files"]),
+        "retained_symbol_count": len(filtered_dep_tree["symbols"]),
+        "retained_edge_count": len(filtered_dep_tree["edges"]),
+    }
+
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, "unique_artifacts_dep_tree.json")
+    with open(output_file, "w", encoding="utf-8") as handle:
+        json.dump(filtered_dep_tree, handle, indent=4, ensure_ascii=False)
+
+    edgelist_output_file = None
+    if generate_llm_txt:
+        edgelist_output_file = os.path.join(output_dir, "unique_artifacts_dep_tree_edgelist.txt")
+        with open(edgelist_output_file, "w", encoding="utf-8") as handle:
+            handle.write(_dep_tree_to_edgelist_text(filtered_dep_tree))
+
+    print(
+        "\n\nSuccess! "
+        f"retained_paths={filtered_dep_tree['filter_summary']['matched_path_count']}, "
+        f"retained_symbols={filtered_dep_tree['filter_summary']['retained_symbol_count']}, "
+        f"retained_edges={filtered_dep_tree['filter_summary']['retained_edge_count']}\n\n"
+        f"Filtered dep_tree extracted to {output_file}\n"
+        + (
+            f"Edge-list extracted to {edgelist_output_file}\n"
+            if edgelist_output_file
+            else ""
+        )
+    )
+    return filtered_dep_tree

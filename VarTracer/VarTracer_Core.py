@@ -551,34 +551,7 @@ class VarTracer:
         将 dep_tree_json() 进一步压缩为便于直接发送给 LLM 的 edge-list 文本。
         """
         dep_tree = self.dep_tree_json(output_path=None, show_progress=show_progress)
-        symbols = dep_tree.get("symbols", {})
-        files = dep_tree.get("files", {})
-        multi_file = len(files) > 1
-
-        def format_symbol(symbol_id):
-            kind, name, scope, file_id, _line_no = symbols[symbol_id]
-            label = f"{scope}::{name}"
-            if multi_file:
-                file_label = os.path.basename(files.get(file_id, file_id))
-                label = f"{file_label}::{label}"
-            return f"{label}<{kind}>"
-
-        lines = [
-            "# Read as: EDGE src -> dst [kind@line xhits]; PATH sink <= source -> ... -> sink.",
-            "# src/dst use scope::name<kind>; file basename is prefixed only when multiple files appear.",
-        ]
-        for src, dst, kind, line_no, hits in dep_tree.get("edges", []):
-            hit_suffix = f" x{hits}" if hits > 1 else ""
-            lines.append(
-                f"EDGE {format_symbol(src)} -> {format_symbol(dst)} [{kind}@{line_no}{hit_suffix}]"
-            )
-
-        for sink_id, sink_paths in dep_tree.get("paths", {}).items():
-            for path in sink_paths:
-                rendered = " -> ".join(format_symbol(symbol_id) for symbol_id in path)
-                lines.append(f"PATH {format_symbol(sink_id)} <= {rendered}")
-
-        output_text = "\n".join(lines)
+        output_text = _dep_tree_to_edgelist_text(dep_tree)
 
         if output_path:
             os.makedirs(output_path, exist_ok=True)
