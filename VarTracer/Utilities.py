@@ -1,3 +1,4 @@
+import ast
 import inspect
 import os
 import subprocess
@@ -850,72 +851,414 @@ label_meanings = {
 
 def extract_unique_functions(exec_stack0, exec_stack1, output_path):
     """
-    对比两个 execution_stack，提取出只在 exec_stack1 中出现而未在 exec_stack0 中出现的 functions，
-    并提取这些 functions 的依赖关系（只保留在 unique set 中的 function names），
-    最后将结果保存为 json 文件。
+    对比两个 execution trace，输出 trace A 相对于 trace B 的 unique modules/files/functions。
+
+    参数约定：
+    - exec_stack0: execution trace A（feature positive）
+    - exec_stack1: execution trace B（feature negative）
+    - output_path: 输出目录
+
+    兼容以下输入形式：
+    - {"execution_stack": [...]}
+    - {"exec_stack": {"execution_stack": [...]}}
+    - 直接传入 execution_stack 列表
+
+    输出文件：
+    - {output_path}/unique_functions.json
+
+    输出 JSON 结构：
+    {
+        "comparison": {...},
+        "unique_modules": [...],
+        "unique_files": [...],
+        "unique_functions": [...]
+    }
     """
-    
-    # === Helper function to collect unique functions from stack ===
-    def get_functions_from_stack(stack_json):
-        # returns { (file_path, function_name): line_no }
-        
-        funcs = {} # Key: (file, func_name), Value: line_no
-        
-        stack_list = stack_json.get("execution_stack", []) if isinstance(stack_json, dict) else stack_json
-        
-        def traverse(events):
+
+    def normalize_trace_stack(trace_obj):
+        if isinstance(trace_obj, dict):
+            if isinstance(trace_obj.get("execution_stack"), list):
+                return trace_obj["execution_stack"]
+            if isinstance(trace_obj.get("exec_stack"), dict):
+                return normalize_trace_stack(trace_obj["exec_stack"])
+        return trace_obj if isinstance(trace_obj, list) else []
+
+    def safe_int(value):
+        try:
+            if value in (None, ""):
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def get_relative_path(path):
+        if not path:
+            return ""
+        try:
+            return os.path.relpath(path, os.getcwd())
+        except ValueError:
+            return path
+
+    definition_cache = {}
+
+    def parse_function_definitions(file_path):
+        if not file_path:
+            return []
+        if file_path in definition_cache:
+            return definition_cache[file_path]
+
+        definitions = []
+        try:
+            with open(file_path, "r", encoding="utf-8") as handle:
+                source = handle.read()
+            tree = ast.parse(source, filename=file_path)
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            definition_cache[file_path] = definitions
+            return definitions
+
+        def walk_nodes(body, scope_parts=None, class_stack=None, parent_kind=None):
+            scope_parts = list(scope_parts or [])
+            class_stack = list(class_stack or [])
+
+            for node in body:
+                if isinstance(node, ast.ClassDef):
+                    walk_nodes(
+                        getattr(node, "body", []),
+                        scope_parts=scope_parts + [node.name],
+                        class_stack=class_stack + [node.name],
+                        parent_kind="class",
+                    )
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    qualified_name = ".".join(scope_parts + [node.name]) if scope_parts else node.name
+                    if parent_kind == "class":
+                        definition_type = "method"
+                    elif parent_kind == "function":
+                        definition_type = "nested_function"
+                    else:
+                        definition_type = "function"
+
+                    definitions.append({
+                        "name": node.name,
+                        "qualified_name": qualified_name,
+                        "path": file_path,
+                        "defined_line_number": safe_int(getattr(node, "lineno", None)),
+                        "end_line_number": safe_int(getattr(node, "end_lineno", getattr(node, "lineno", None))),
+                        "class_name": class_stack[-1] if class_stack else None,
+                        "parent_scope": ".".join(scope_parts) if scope_parts else None,
+                        "definition_type": definition_type,
+                        "is_async": isinstance(node, ast.AsyncFunctionDef),
+                    })
+                    walk_nodes(
+                        getattr(node, "body", []),
+                        scope_parts=scope_parts + [node.name],
+                        class_stack=class_stack,
+                        parent_kind="function",
+                    )
+
+        walk_nodes(getattr(tree, "body", []))
+        definition_cache[file_path] = definitions
+        return definitions
+
+    def resolve_function_definition(file_path, func_name, observed_lines):
+        candidates = [
+            item for item in parse_function_definitions(file_path)
+            if item.get("name") == func_name
+        ]
+        if not candidates:
+            return {}
+        clean_lines = [line for line in observed_lines if isinstance(line, int)]
+        if not clean_lines and len(candidates) == 1:
+            return dict(candidates[0])
+
+        def candidate_score(candidate):
+            start = candidate.get("defined_line_number")
+            end = candidate.get("end_line_number") or start
+            hits = 0
+            for line in clean_lines:
+                if start is not None and end is not None and start <= line <= end:
+                    hits += 1
+            span = (end - start) if start is not None and end is not None else 10 ** 9
+            start_rank = -(start or 10 ** 9)
+            return (hits, -span, start_rank)
+
+        return dict(max(candidates, key=candidate_score))
+
+    def collect_frame_lines(events, target_file_path, target_func_name):
+        lines = []
+        for event in events:
+            details = event.get("details", {})
+            if (
+                details.get("file_path") == target_file_path
+                and details.get("func") == target_func_name
+            ):
+                line_no = safe_int(details.get("line_no"))
+                if line_no is not None:
+                    lines.append(line_no)
+            if event.get("type") == "CALL":
+                continue
+        return lines
+
+    def build_function_key(file_path, module_name, func_name, definition):
+        defined_line = definition.get("defined_line_number")
+        qualified_name = definition.get("qualified_name") or func_name
+        return (file_path, module_name or "", qualified_name, defined_line if defined_line is not None else 0)
+
+    def ensure_module_record(container, module_name):
+        return container.setdefault(module_name, {
+            "module_name": module_name,
+            "is_top_level_script": module_name == "(unknown-module)",
+            "file_paths": set(),
+            "function_names": set(),
+            "event_count_in_trace_a": 0,
+            "line_event_count_in_trace_a": 0,
+            "call_event_count_in_trace_a": 0,
+            "max_call_depth": 0,
+            "first_seen_line_number": None,
+        })
+
+    def ensure_file_record(container, file_path):
+        return container.setdefault(file_path, {
+            "path": file_path,
+            "relative_path": get_relative_path(file_path),
+            "file_name": os.path.basename(file_path) if file_path else "",
+            "module_names": set(),
+            "function_names": set(),
+            "event_count_in_trace_a": 0,
+            "line_event_count_in_trace_a": 0,
+            "call_event_count_in_trace_a": 0,
+            "max_call_depth": 0,
+            "first_seen_line_number": None,
+        })
+
+    def ensure_function_record(container, function_key, base_info):
+        return container.setdefault(function_key, {
+            "name": base_info.get("name"),
+            "qualified_name": base_info.get("qualified_name"),
+            "module_name": base_info.get("module_name"),
+            "path": base_info.get("path"),
+            "relative_path": get_relative_path(base_info.get("path")),
+            "file_name": os.path.basename(base_info.get("path")) if base_info.get("path") else "",
+            "defined_line_number": base_info.get("defined_line_number"),
+            "end_line_number": base_info.get("end_line_number"),
+            "definition_type": base_info.get("definition_type"),
+            "class_name": base_info.get("class_name"),
+            "parent_scope": base_info.get("parent_scope"),
+            "is_async": bool(base_info.get("is_async")),
+            "definition_found_in_source": bool(base_info.get("definition_found_in_source")),
+            "first_seen_line_number": None,
+            "observed_line_numbers": set(),
+            "event_count_in_trace_a": 0,
+            "call_count_in_trace_a": 0,
+            "line_event_count_in_trace_a": 0,
+            "return_count_in_trace_a": 0,
+            "exception_count_in_trace_a": 0,
+            "max_call_depth": 0,
+            "sample_executed_lines": [],
+        })
+
+    def prepare_function_identity(file_path, module_name, func_name, observed_lines):
+        definition = resolve_function_definition(file_path, func_name, observed_lines)
+        base_info = {
+            "name": func_name,
+            "qualified_name": definition.get("qualified_name") or func_name,
+            "module_name": module_name,
+            "path": file_path,
+            "defined_line_number": definition.get("defined_line_number"),
+            "end_line_number": definition.get("end_line_number"),
+            "definition_type": definition.get("definition_type") or "function",
+            "class_name": definition.get("class_name"),
+            "parent_scope": definition.get("parent_scope"),
+            "is_async": definition.get("is_async", False),
+            "definition_found_in_source": bool(definition),
+        }
+        return build_function_key(file_path, module_name, func_name, definition), base_info
+
+    def update_function_record(record, event, line_no, depth):
+        event_type = event.get("type", "")
+        record["event_count_in_trace_a"] += 1
+        record["max_call_depth"] = max(record["max_call_depth"], depth or 0)
+        if line_no is not None:
+            record["observed_line_numbers"].add(line_no)
+            if record["first_seen_line_number"] is None:
+                record["first_seen_line_number"] = line_no
+        if event_type == "CALL":
+            record["call_count_in_trace_a"] += 1
+        elif event_type == "LINE":
+            record["line_event_count_in_trace_a"] += 1
+        elif event_type == "RETURN":
+            record["return_count_in_trace_a"] += 1
+        elif event_type == "EXCEPTION":
+            record["exception_count_in_trace_a"] += 1
+
+        details = event.get("details", {})
+        line_content = details.get("line_content")
+        if line_no is not None and line_content:
+            sample_key = (line_no, line_content)
+            existing_keys = {
+                (item.get("line_number"), item.get("line_content"))
+                for item in record["sample_executed_lines"]
+            }
+            if sample_key not in existing_keys and len(record["sample_executed_lines"]) < 5:
+                record["sample_executed_lines"].append({
+                    "line_number": line_no,
+                    "line_content": line_content,
+                })
+
+    def build_trace_summary(trace_obj):
+        stack_list = normalize_trace_stack(trace_obj)
+        state = {
+            "modules": {},
+            "files": {},
+            "functions": {},
+        }
+
+        def traverse(events, active_function_key=None):
             for event in events:
                 details = event.get("details", {})
+                module_name = details.get("module")
                 file_path = details.get("file_path")
                 func_name = details.get("func")
-                line_no = details.get("line_no")
-                
-                if file_path and func_name: 
-                    key = (file_path, func_name)
-                    if key not in funcs:
-                        funcs[key] = line_no # store the line number of first occurrence in trace
-                
-                if "daughter_stack" in details:
-                    traverse(details["daughter_stack"])
-        
+                line_no = safe_int(details.get("line_no"))
+                depth = safe_int(details.get("depth")) or 0
+                event_type = event.get("type", "")
+
+                if module_name:
+                    module_record = ensure_module_record(state["modules"], module_name)
+                    module_record["event_count_in_trace_a"] += 1
+                    module_record["max_call_depth"] = max(module_record["max_call_depth"], depth)
+                    if file_path:
+                        module_record["file_paths"].add(file_path)
+                    if func_name and func_name != "<module>":
+                        module_record["function_names"].add(func_name)
+                    if line_no is not None and module_record["first_seen_line_number"] is None:
+                        module_record["first_seen_line_number"] = line_no
+                    if event_type == "LINE":
+                        module_record["line_event_count_in_trace_a"] += 1
+                    elif event_type == "CALL":
+                        module_record["call_event_count_in_trace_a"] += 1
+
+                if file_path:
+                    file_record = ensure_file_record(state["files"], file_path)
+                    file_record["event_count_in_trace_a"] += 1
+                    file_record["max_call_depth"] = max(file_record["max_call_depth"], depth)
+                    if module_name:
+                        file_record["module_names"].add(module_name)
+                    if func_name and func_name != "<module>":
+                        file_record["function_names"].add(func_name)
+                    if line_no is not None and file_record["first_seen_line_number"] is None:
+                        file_record["first_seen_line_number"] = line_no
+                    if event_type == "LINE":
+                        file_record["line_event_count_in_trace_a"] += 1
+                    elif event_type == "CALL":
+                        file_record["call_event_count_in_trace_a"] += 1
+
+                current_function_key = active_function_key
+                if func_name and func_name != "<module>" and file_path:
+                    if event_type == "CALL":
+                        observed_lines = collect_frame_lines(
+                            details.get("daughter_stack", []),
+                            file_path,
+                            func_name,
+                        )
+                        current_function_key, base_info = prepare_function_identity(
+                            file_path,
+                            module_name,
+                            func_name,
+                            observed_lines,
+                        )
+                        function_record = ensure_function_record(
+                            state["functions"],
+                            current_function_key,
+                            base_info,
+                        )
+                        update_function_record(function_record, event, line_no, depth)
+                    else:
+                        if current_function_key is None:
+                            current_function_key, base_info = prepare_function_identity(
+                                file_path,
+                                module_name,
+                                func_name,
+                                [line_no] if line_no is not None else [],
+                            )
+                            function_record = ensure_function_record(
+                                state["functions"],
+                                current_function_key,
+                                base_info,
+                            )
+                        else:
+                            function_record = state["functions"][current_function_key]
+                        update_function_record(function_record, event, line_no, depth)
+
+                if event_type == "CALL":
+                    traverse(details.get("daughter_stack", []), active_function_key=current_function_key)
+
         traverse(stack_list)
-        return funcs
 
-    funcs0 = get_functions_from_stack(exec_stack0)
-    funcs1 = get_functions_from_stack(exec_stack1)
-    
-    # Identify unique functions (in 1 but not 0)
-    unique_keys = set(funcs1.keys()) - set(funcs0.keys())
-    
-    # Create function objects map for easy dependency linking
-    # Schema: { (file, func): { "str_id": "func_name", "obj": {...} } }
-    unique_funcs_map = {}
-    
-    for key in unique_keys:
-        file_path, func_name = key
-        line_no = funcs1[key]
-        
-        func_obj = {
-            "file_path": file_path,
-            "line_number": str(line_no),
-            "function_name": func_name
-        }
-        unique_funcs_map[key] = func_obj
+        for record in state["modules"].values():
+            record["file_paths"] = sorted(record["file_paths"])
+            record["file_names"] = sorted(os.path.basename(path) for path in record["file_paths"])
+            record["function_names"] = sorted(record["function_names"])
+            record["file_count"] = len(record["file_paths"])
+            record["function_count"] = len(record["function_names"])
 
-    # If no unique functions, write empty list and return
-    if not unique_funcs_map:
-        output_file = os.path.join(output_path, "unique_functions.json")
-        with open(output_file, 'w') as f:
-            json.dump([], f, indent=4)
-        return
+        for record in state["files"].values():
+            record["module_names"] = sorted(record["module_names"])
+            record["function_names"] = sorted(record["function_names"])
+            record["module_count"] = len(record["module_names"])
+            record["function_count"] = len(record["function_names"])
 
+        for record in state["functions"].values():
+            record["observed_line_numbers"] = sorted(record["observed_line_numbers"])
+            record["sample_executed_lines"] = sorted(
+                record["sample_executed_lines"],
+                key=lambda item: (item.get("line_number") is None, item.get("line_number")),
+            )
 
+        return state
 
-    # Convert to list
-    final_list = list(unique_funcs_map.values())
-    
-    output_file = os.path.join(output_path, "unique_functions.json")
-    with open(output_file, 'w') as f:
-        json.dump(final_list, f, indent=4)
-        
-    print(f"\n\nSuccess! list length: {len(final_list)}\n\nUnique functions extracted to {output_file}\n")
+    trace_a_summary = build_trace_summary(exec_stack0)
+    trace_b_summary = build_trace_summary(exec_stack1)
+
+    unique_module_names = sorted(set(trace_a_summary["modules"]) - set(trace_b_summary["modules"]))
+    unique_file_paths = sorted(set(trace_a_summary["files"]) - set(trace_b_summary["files"]))
+    unique_function_keys = sorted(
+        set(trace_a_summary["functions"]) - set(trace_b_summary["functions"]),
+        key=lambda item: (item[0], item[3], item[2]),
+    )
+
+    result_payload = {
+        "comparison": {
+            "trace_a_role": "feature_positive",
+            "trace_b_role": "feature_negative",
+            "comparison_type": "trace_a_minus_trace_b",
+            "unique_module_count": len(unique_module_names),
+            "unique_file_count": len(unique_file_paths),
+            "unique_function_count": len(unique_function_keys),
+        },
+        "unique_modules": [
+            trace_a_summary["modules"][module_name]
+            for module_name in unique_module_names
+        ],
+        "unique_files": [
+            trace_a_summary["files"][file_path]
+            for file_path in unique_file_paths
+        ],
+        "unique_functions": [
+            trace_a_summary["functions"][function_key]
+            for function_key in unique_function_keys
+        ],
+    }
+
+    os.makedirs(output_path, exist_ok=True)
+    output_file = os.path.join(output_path, "unique_artifacts.json")
+    with open(output_file, "w", encoding="utf-8") as handle:
+        json.dump(result_payload, handle, indent=4, ensure_ascii=False)
+
+    print(
+        "\n\nSuccess! "
+        f"modules={len(result_payload['unique_modules'])}, "
+        f"files={len(result_payload['unique_files'])}, "
+        f"functions={len(result_payload['unique_functions'])}\n\n"
+        f"Unique trace summary extracted to {output_file}\n"
+    )
+    return result_payload
