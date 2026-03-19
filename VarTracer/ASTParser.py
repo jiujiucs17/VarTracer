@@ -56,7 +56,7 @@ DEPENDENCY_GRAPH_COMMENT = {
         "edges.edge_kind": (
             "Type of direct dependency edge. Possible values: `data` = ordinary data dependency from a read value; "
             "`arg` = dependency coming from a function-parameter symbol; `call` = dependency on a function symbol used as a call target; "
-            "`ctor` = dependency on a class symbol used as a constructor call."
+            "`ctor` = dependency on a class symbol used as a constructor call; `ret` = dependency carried back from a traced callee return."
         ),
         "edges.line": (
             "Line where this direct dependency was observed while building the target symbol. "
@@ -77,6 +77,57 @@ DEPENDENCY_GRAPH_COMMENT = {
         "paths[*]": (
             "One dependency path represented as a list of symbol ids. "
             "Read it from left to right as source-to-sink flow."
+        ),
+    },
+}
+
+FLOW_TRACE_COMMENT = {
+    "overview": (
+        "This JSON is a compact runtime flow trace. Use `frames` to recover the dynamic call tree, "
+        "`symbols` to resolve ids, and `steps` to read how values and control moved during execution."
+    ),
+    "fields": {
+        "version": "Schema version for this runtime flow-trace format.",
+        "trace_started_at": "Timestamp captured when tracing started. It is metadata only.",
+        "files": (
+            "Map from short file ids such as `f1` to absolute file paths. "
+            "Other sections refer to files through these ids."
+        ),
+        "symbols": (
+            "Map from short symbol ids such as `s3` to `[kind,name,scope,file_id,line]`. "
+            "The layout matches the dependency graph so the same symbol ids can be reused across both artifacts."
+        ),
+        "frames": (
+            "Map from dynamic frame ids such as `c2` to `[parent_frame_id,func,file_id,depth,call_line]`. "
+            "An empty parent id means the frame was entered from the trace root rather than from another traced frame."
+        ),
+        "frames.parent_frame_id": "Dynamic caller frame id, or an empty string for root-entered frames.",
+        "frames.func": "Function-like name for this runtime frame, such as `<module>`, `main`, or `run`.",
+        "frames.file_id": "Short file id pointing back to `files`.",
+        "frames.depth": "Call depth copied from the execution trace.",
+        "frames.call_line": (
+            "Caller-side line that triggered this frame. "
+            "`0` means the entry was not matched back to a concrete traced call site."
+        ),
+        "steps": (
+            "Ordered list of runtime flow steps. Each step is stored as "
+            "`[seq,frame_id,op,line,reads,writes,meta]`."
+        ),
+        "steps.seq": "Global execution-order counter starting at 1.",
+        "steps.frame_id": "Dynamic frame id owning this step. It may be an empty string for loose root-level steps.",
+        "steps.op": (
+            "Operation kind. Values: `def` = definition binding; `as` = direct assignment/update; "
+            "`use` = read-only statement; `cond` = control-flow test; `call` = caller enters a traced callee; "
+            "`arg` = actual-to-parameter transfer; `bind` = callee result bound back into caller state; "
+            "`ret` = current frame returns data outward; `exc` = exception observed on this line."
+        ),
+        "steps.line": "Concrete source line for this runtime step, or `0` when unavailable.",
+        "steps.reads": "List of upstream symbol ids consumed by this step.",
+        "steps.writes": "List of downstream symbol ids produced or updated by this step.",
+        "steps.meta": (
+            "Small metadata dictionary used only when needed. "
+            "Typical keys are `stmt` for the AST statement kind, `callee` for a child frame id, "
+            "`func` for a callee name, or `exception_type` for exception steps."
         ),
     },
 }
@@ -365,12 +416,155 @@ class LineDependencyAnalyzer(ast.NodeVisitor):
             "dependencies": self.dependencies,
             "assigned_vars": self.assigned_vars
         }
+
+
+class ExpressionDependencyCollector(ast.NodeVisitor):
+    """Collect potential dependency labels from an expression without runtime symbol filtering."""
+
+    def __init__(self):
+        self.dependencies = set()
+
+    def _extract_full_attribute(self, node):
+        attr_chain = []
+        cur = node
+        while isinstance(cur, ast.Attribute):
+            attr_chain.append(cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name):
+            attr_chain.append(cur.id)
+            return ".".join(reversed(attr_chain)), cur.id
+        return None, None
+
+    def _extract_called_attribute(self, func_node):
+        if not isinstance(func_node, ast.Attribute):
+            return None
+        full_attr, _root_name = self._extract_full_attribute(func_node)
+        return full_attr
+
+    def visit_Name(self, node):
+        if isinstance(node.ctx, ast.Load):
+            self.dependencies.add(node.id)
+
+    def visit_Attribute(self, node):
+        full_attr, _root_name = self._extract_full_attribute(node)
+        if full_attr and isinstance(node.ctx, ast.Load):
+            self.dependencies.add(full_attr)
+        self.visit(node.value)
+
+    def visit_Call(self, node):
+        if isinstance(node.func, ast.Name):
+            self.dependencies.add(node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            called_attr = self._extract_called_attribute(node.func)
+            if called_attr:
+                self.dependencies.add(called_attr)
+        self.visit(node.func)
+        for arg in node.args:
+            self.visit(arg)
+        for kw in node.keywords:
+            self.visit(kw.value)
+
+    def collect(self, node):
+        self.visit(node)
+        return self.dependencies
+
+
+class RuntimeStatementAnalyzer:
+    """Summarize runtime-relevant flow semantics for one executed statement."""
+
+    def __init__(self, dependencies, assigned_vars):
+        self.dependencies = set(dependencies or [])
+        self.assigned_vars = list(assigned_vars or [])
+
+    def _collect_expr_dependencies(self, node):
+        if node is None:
+            return []
+        deps = ExpressionDependencyCollector().collect(node)
+        return sorted(dep for dep in deps if dep in self.dependencies)
+
+    def _collect_call_nodes(self, node):
+        calls = []
+
+        class CallCollector(ast.NodeVisitor):
+            def visit_Call(self, call_node):
+                self.visit(call_node.func)
+                for arg in call_node.args:
+                    self.visit(arg)
+                for kw in call_node.keywords:
+                    self.visit(kw.value)
+                calls.append(call_node)
+
+        CallCollector().visit(node)
+        return calls
+
+    def _callee_label(self, func_node):
+        if isinstance(func_node, ast.Name):
+            return func_node.id, func_node.id
+        if isinstance(func_node, ast.Attribute):
+            full_attr, _root_name = ExpressionDependencyCollector()._extract_full_attribute(func_node)
+            if full_attr:
+                return full_attr, func_node.attr
+            return func_node.attr, func_node.attr
+        return None, None
+
+    def analyze(self, stmt_node):
+        stmt_kind = type(stmt_node).__name__
+        if isinstance(stmt_node, ast.Return):
+            result_kind = "return"
+            result_targets = ["@return"]
+        elif isinstance(stmt_node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            result_kind = "assign"
+            result_targets = list(self.assigned_vars)
+        else:
+            result_kind = "none"
+            result_targets = []
+
+        callsites = []
+        consumed_dependencies = set()
+        for call_node in self._collect_call_nodes(stmt_node):
+            callee_label, callee_hint = self._callee_label(call_node.func)
+            receiver_groups = []
+            if isinstance(call_node.func, ast.Attribute):
+                receiver_groups.append(self._collect_expr_dependencies(call_node.func.value))
+
+            arg_groups = receiver_groups
+            for arg in call_node.args:
+                arg_groups.append(self._collect_expr_dependencies(arg))
+            for kw in call_node.keywords:
+                arg_groups.append(self._collect_expr_dependencies(kw.value))
+
+            call_deps = set(self._collect_expr_dependencies(call_node))
+            callable_deps = self._collect_expr_dependencies(call_node.func)
+            consumed_dependencies.update(call_deps)
+            callsites.append(
+                {
+                    "callee_label": callee_label,
+                    "callee_hint": callee_hint,
+                    "callable_dependencies": callable_deps,
+                    "consumed_dependencies": sorted(call_deps),
+                    "arg_dependency_groups": arg_groups,
+                    "result_kind": result_kind,
+                    "result_targets": list(result_targets),
+                }
+            )
+
+        residual_dependencies = sorted(dep for dep in self.dependencies if dep not in consumed_dependencies)
+        return {
+            "stmt_kind": stmt_kind,
+            "result_kind": result_kind,
+            "result_targets": result_targets,
+            "callsites": callsites,
+            "residual_dependencies": residual_dependencies,
+        }
     
 class DependencyTree:
     def __init__(self, call_stack=None):
         self.call_stack = None
         self.files = set()
         self.dependency_by_file = None
+        self.flow_trace = None
+        self._source_index_cache = None
+        self._artifact_cache = None
 
         if call_stack:
             try:
@@ -413,12 +607,16 @@ class DependencyTree:
         return 0
 
     def _build_source_index(self):
+        if self._source_index_cache is not None:
+            return self._source_index_cache
+
         source_index = {}
 
         class DefinitionIndexer(ast.NodeVisitor):
             def __init__(self):
                 self.scope_stack = []
                 self.params_by_scope = {}
+                self.param_order_by_scope = {}
                 self.defs_by_scope = {}
                 self.defs_by_name = {}
 
@@ -442,16 +640,25 @@ class DependencyTree:
 
             def _record_params(self, func_name, node):
                 params = {}
+                order = []
                 positional = list(getattr(node.args, "posonlyargs", [])) + list(node.args.args)
                 for arg in positional:
                     params[arg.arg] = node.lineno
+                    order.append(arg.arg)
                 if node.args.vararg:
                     params[node.args.vararg.arg] = node.lineno
+                    order.append(node.args.vararg.arg)
                 for arg in node.args.kwonlyargs:
                     params[arg.arg] = node.lineno
+                    order.append(arg.arg)
                 if node.args.kwarg:
                     params[node.args.kwarg.arg] = node.lineno
+                    order.append(node.args.kwarg.arg)
                 self.params_by_scope.setdefault(func_name, {}).update(params)
+                self.param_order_by_scope.setdefault(func_name, [])
+                for name in order:
+                    if name not in self.param_order_by_scope[func_name]:
+                        self.param_order_by_scope[func_name].append(name)
 
             def visit_FunctionDef(self, node):
                 scope = self._scope_label()
@@ -474,8 +681,10 @@ class DependencyTree:
         for file_path in sorted(path for path in self.files if path):
             index = {
                 "params_by_scope": {},
+                "param_order_by_scope": {},
                 "defs_by_scope": {},
                 "defs_by_name": {},
+                "stmt_nodes": [],
             }
             if os.path.exists(file_path):
                 try:
@@ -484,13 +693,40 @@ class DependencyTree:
                     indexer = DefinitionIndexer()
                     indexer.visit(tree)
                     index["params_by_scope"] = indexer.params_by_scope
+                    index["param_order_by_scope"] = indexer.param_order_by_scope
                     index["defs_by_scope"] = indexer.defs_by_scope
                     index["defs_by_name"] = indexer.defs_by_name
+                    index["stmt_nodes"] = [
+                        node for node in ast.walk(tree)
+                        if isinstance(node, ast.stmt) and hasattr(node, "lineno") and hasattr(node, "end_lineno")
+                    ]
                 except (OSError, SyntaxError):
                     pass
             source_index[file_path] = index
 
+        self._source_index_cache = source_index
         return source_index
+
+    def _get_statement_node(self, file_index, line_no):
+        stmt_nodes = file_index.get("stmt_nodes", [])
+
+        def statement_key(node):
+            end_lineno = getattr(node, "end_lineno", node.lineno)
+            end_col = getattr(node, "end_col_offset", 0)
+            start_col = getattr(node, "col_offset", 0)
+            return (end_lineno - node.lineno, end_col - start_col)
+
+        starting_here = [node for node in stmt_nodes if node.lineno == line_no]
+        if starting_here:
+            return min(starting_here, key=statement_key)
+
+        covering_line = [
+            node for node in stmt_nodes
+            if node.lineno <= line_no <= getattr(node, "end_lineno", node.lineno)
+        ]
+        if covering_line:
+            return min(covering_line, key=statement_key)
+        return None
 
     def _infer_assigned_kind(self, name, scope, line_no, file_index):
         if name.endswith("[]"):
@@ -550,29 +786,48 @@ class DependencyTree:
 
         return paths_by_sink
     
-    def parse_dependency(self):
-        """
-        Parse the execution stack into a compact dependency graph that is
-        optimized for downstream LLM consumption.
-        """
+    def _build_semantic_artifacts(self):
+        if self._artifact_cache is not None:
+            return self._artifact_cache
+
         file_paths = sorted(path for path in self.files if path)
         file_ids = {path: f"f{index}" for index, path in enumerate(file_paths, 1)}
         source_index = self._build_source_index()
 
         graph = {
             "_comment": DEPENDENCY_GRAPH_COMMENT,
-            "version": "ddg.v2",
+            "version": "ddg.v3",
             "trace_started_at": self.call_stack.get("trace_started_at"),
             "files": {file_id: path for path, file_id in file_ids.items()},
             "symbols": {},
             "edges": [],
             "paths": {},
         }
+        flow = {
+            "_comment": FLOW_TRACE_COMMENT,
+            "version": "flow.v1",
+            "trace_started_at": self.call_stack.get("trace_started_at"),
+            "files": graph["files"],
+            "symbols": graph["symbols"],
+            "frames": {},
+            "steps": [],
+        }
 
         symbol_by_key = {}
         latest_symbol = {}
         edge_hits = defaultdict(int)
         next_symbol_id = 1
+        next_frame_id = 1
+        next_step_seq = 1
+
+        def uniq(values):
+            seen = set()
+            ordered = []
+            for value in values:
+                if value and value not in seen:
+                    seen.add(value)
+                    ordered.append(value)
+            return ordered
 
         def ensure_symbol(kind, name, scope, file_id, line_no):
             nonlocal next_symbol_id
@@ -616,48 +871,368 @@ class DependencyTree:
             kind = "attr" if "." in dep_name else "ref"
             return ensure_symbol(kind, dep_name, scope, file_id, 0)
 
-        def traverse(stack):
-            for item in stack:
+        def resolve_many(dep_names, scope, file_path, file_id, line_no):
+            return uniq(
+                resolve_dependency_symbol(dep_name, scope, file_path, file_id, line_no)
+                for dep_name in dep_names or []
+            )
+
+        def add_edge(source_id, target_id, line_no, kind=None):
+            source_kind = graph["symbols"][source_id][0]
+            edge_kind = kind or self._edge_kind_for_symbol(source_kind)
+            edge_hits[(source_id, target_id, edge_kind, line_no)] += 1
+
+        def add_step(frame_id, op, line_no, reads=None, writes=None, meta=None):
+            nonlocal next_step_seq
+            flow["steps"].append(
+                [
+                    next_step_seq,
+                    frame_id or "",
+                    op,
+                    line_no,
+                    uniq(reads or []),
+                    uniq(writes or []),
+                    meta or {},
+                ]
+            )
+            next_step_seq += 1
+
+        def ensure_targets(target_names, scope, file_id, line_no, file_index):
+            targets = {}
+            for var_name in target_names:
+                symbol_kind = self._infer_assigned_kind(var_name, scope, line_no, file_index)
+                targets[var_name] = ensure_symbol(symbol_kind, var_name, scope, file_id, line_no)
+            return targets
+
+        def analyze_statement(details, file_index):
+            dependencies = details.get("dependencies", [])
+            assigned_vars = details.get("assigned_vars", [])
+            line_no = self._coerce_line_number(details.get("line_no"))
+            stmt_node = self._get_statement_node(file_index, line_no)
+            if stmt_node is None:
+                return {
+                    "stmt_kind": "Unknown",
+                    "result_kind": "assign" if assigned_vars else "none",
+                    "result_targets": list(assigned_vars),
+                    "callsites": [],
+                    "residual_dependencies": list(dependencies),
+                }
+            return RuntimeStatementAnalyzer(dependencies, assigned_vars).analyze(stmt_node)
+
+        def make_pending_line(item, frame_state):
+            details = item.get("details", {})
+            file_path = details.get("file_path")
+            file_id = file_ids.get(file_path)
+            if not file_id:
+                return None
+
+            scope = details.get("func") or "<module>"
+            line_no = self._coerce_line_number(details.get("line_no"))
+            file_index = source_index.get(file_path, {})
+            statement = analyze_statement(details, file_index)
+            target_ids = ensure_targets(
+                details.get("assigned_vars", []),
+                scope,
+                file_id,
+                line_no,
+                file_index,
+            )
+            callsites = []
+            for callsite in statement.get("callsites", []):
+                callsites.append(
+                    {
+                        **callsite,
+                        "matched": False,
+                        "file_path": file_path,
+                        "file_id": file_id,
+                        "scope": scope,
+                        "line_no": line_no,
+                        "target_ids": target_ids,
+                        "parent_frame_id": frame_state.get("frame_id", ""),
+                    }
+                )
+
+            return {
+                "file_path": file_path,
+                "file_id": file_id,
+                "scope": scope,
+                "line_no": line_no,
+                "stmt_kind": statement.get("stmt_kind", "Unknown"),
+                "is_return": statement.get("result_kind") == "return",
+                "residual_dependencies": statement.get("residual_dependencies", []),
+                "target_ids": target_ids,
+                "callsites": callsites,
+                "matched_return_sources": set(),
+            }
+
+        def flush_pending_line(pending, frame_state):
+            if pending is None:
+                return
+
+            line_no = pending["line_no"]
+            file_path = pending["file_path"]
+            file_id = pending["file_id"]
+            scope = pending["scope"]
+            stmt_kind = pending["stmt_kind"]
+            target_ids = list(pending["target_ids"].values())
+            residual_source_ids = resolve_many(
+                pending["residual_dependencies"],
+                scope,
+                file_path,
+                file_id,
+                line_no,
+            )
+
+            if target_ids:
+                for target_id in target_ids:
+                    for source_id in residual_source_ids:
+                        add_edge(source_id, target_id, line_no)
+                if residual_source_ids or stmt_kind in {"FunctionDef", "AsyncFunctionDef", "ClassDef"}:
+                    add_step(
+                        frame_state.get("frame_id", ""),
+                        "def" if stmt_kind in {"FunctionDef", "AsyncFunctionDef", "ClassDef"} else "as",
+                        line_no,
+                        residual_source_ids,
+                        target_ids,
+                        {"stmt": stmt_kind},
+                    )
+
+            if not target_ids and residual_source_ids:
+                op = "cond" if stmt_kind in {"If", "While", "For", "AsyncFor", "With", "AsyncWith"} else "use"
+                add_step(
+                    frame_state.get("frame_id", ""),
+                    op,
+                    line_no,
+                    residual_source_ids,
+                    [],
+                    {"stmt": stmt_kind},
+                )
+
+            total_return_sources = set(pending["matched_return_sources"])
+            for callsite in pending["callsites"]:
+                if callsite["matched"]:
+                    continue
+                fallback_source_ids = resolve_many(
+                    callsite.get("consumed_dependencies") or callsite.get("callable_dependencies"),
+                    scope,
+                    file_path,
+                    file_id,
+                    line_no,
+                )
+                if callsite["result_kind"] == "return":
+                    total_return_sources.update(fallback_source_ids)
+                elif target_ids and fallback_source_ids:
+                    for target_id in target_ids:
+                        for source_id in fallback_source_ids:
+                            add_edge(source_id, target_id, line_no)
+                    add_step(
+                        frame_state.get("frame_id", ""),
+                        "bind",
+                        line_no,
+                        fallback_source_ids,
+                        target_ids,
+                        {"stmt": stmt_kind, "callee": callsite.get("callee_label"), "fallback": True},
+                    )
+
+            if pending["is_return"]:
+                total_return_sources.update(residual_source_ids)
+                if total_return_sources:
+                    frame_state["return_sources"].update(total_return_sources)
+                add_step(
+                    frame_state.get("frame_id", ""),
+                    "ret",
+                    line_no,
+                    sorted(total_return_sources),
+                    [],
+                    {"stmt": stmt_kind},
+                )
+
+            for var_name, symbol_id in pending["target_ids"].items():
+                latest_symbol[(file_id, scope, var_name)] = symbol_id
+
+        def match_callsite(pending, func_name):
+            if pending is None:
+                return None
+            for callsite in pending["callsites"]:
+                if not callsite["matched"] and callsite.get("callee_hint") == func_name:
+                    callsite["matched"] = True
+                    return callsite
+            for callsite in pending["callsites"]:
+                if not callsite["matched"]:
+                    callsite["matched"] = True
+                    return callsite
+            return None
+
+        def process_call_event(call_event, parent_frame_state, callsite=None):
+            nonlocal next_frame_id
+
+            details = call_event.get("details", {})
+            file_path = details.get("file_path")
+            file_id = file_ids.get(file_path)
+            if not file_id:
+                return {"frame_id": "", "return_sources": set()}
+
+            frame_id = f"c{next_frame_id}"
+            next_frame_id += 1
+            scope = details.get("func") or "<module>"
+            depth = details.get("depth", 0)
+            call_line = callsite["line_no"] if callsite else 0
+            flow["frames"][frame_id] = [
+                parent_frame_state.get("frame_id", ""),
+                scope,
+                file_id,
+                depth,
+                call_line,
+            ]
+
+            frame_state = {
+                "frame_id": frame_id,
+                "scope": scope,
+                "file_path": file_path,
+                "file_id": file_id,
+                "return_sources": set(),
+            }
+
+            callable_source_ids = []
+            if callsite is not None:
+                callable_source_ids = resolve_many(
+                    callsite.get("callable_dependencies"),
+                    callsite["scope"],
+                    callsite["file_path"],
+                    callsite["file_id"],
+                    callsite["line_no"],
+                )
+                add_step(
+                    parent_frame_state.get("frame_id", ""),
+                    "call",
+                    callsite["line_no"],
+                    callable_source_ids,
+                    [],
+                    {"callee": frame_id, "func": scope},
+                )
+
+                child_file_index = source_index.get(file_path, {})
+                param_order = child_file_index.get("param_order_by_scope", {}).get(scope, [])
+                param_lines = child_file_index.get("params_by_scope", {}).get(scope, {})
+                arg_read_ids = []
+                arg_write_ids = []
+                for index, param_name in enumerate(param_order):
+                    if index >= len(callsite["arg_dependency_groups"]):
+                        break
+                    source_ids = resolve_many(
+                        callsite["arg_dependency_groups"][index],
+                        callsite["scope"],
+                        callsite["file_path"],
+                        callsite["file_id"],
+                        callsite["line_no"],
+                    )
+                    if not source_ids:
+                        continue
+                    param_symbol = ensure_symbol(
+                        "param",
+                        param_name,
+                        scope,
+                        file_id,
+                        param_lines.get(param_name, 0),
+                    )
+                    latest_symbol[(file_id, scope, param_name)] = param_symbol
+                    arg_write_ids.append(param_symbol)
+                    arg_read_ids.extend(source_ids)
+                    for source_id in source_ids:
+                        add_edge(source_id, param_symbol, callsite["line_no"], kind="arg")
+
+                if arg_read_ids or arg_write_ids:
+                    add_step(
+                        parent_frame_state.get("frame_id", ""),
+                        "arg",
+                        callsite["line_no"],
+                        arg_read_ids,
+                        arg_write_ids,
+                        {"callee": frame_id},
+                    )
+
+            process_event_list(details.get("daughter_stack", []), frame_state)
+
+            if callsite is not None:
+                bound_source_ids = sorted(frame_state["return_sources"]) or callable_source_ids
+                if callsite["result_kind"] == "return":
+                    parent_frame_state["return_sources"].update(bound_source_ids)
+                else:
+                    target_ids = list(callsite["target_ids"].values())
+                    if bound_source_ids and target_ids:
+                        for target_id in target_ids:
+                            for source_id in bound_source_ids:
+                                add_edge(
+                                    source_id,
+                                    target_id,
+                                    callsite["line_no"],
+                                    kind="ret" if frame_state["return_sources"] else None,
+                                )
+                            for source_id in callable_source_ids:
+                                add_edge(source_id, target_id, callsite["line_no"])
+                        add_step(
+                            parent_frame_state.get("frame_id", ""),
+                            "bind",
+                            callsite["line_no"],
+                            bound_source_ids,
+                            target_ids,
+                            {
+                                "callee": frame_id,
+                                "stmt": callsite["result_kind"],
+                                "kind": "ret" if frame_state["return_sources"] else "fallback",
+                            },
+                        )
+
+            return {"frame_id": frame_id, "return_sources": frame_state["return_sources"]}
+
+        def process_event_list(events, frame_state):
+            pending = None
+            for item in events:
                 details = item.get("details", {})
                 event_type = item.get("type")
-                file_path = details.get("file_path")
-                if file_path not in file_ids:
-                    if "daughter_stack" in details:
-                        traverse(details["daughter_stack"])
-                    continue
 
                 if event_type == "LINE":
-                    file_id = file_ids[file_path]
-                    scope = details.get("func") or "<module>"
-                    line_no = self._coerce_line_number(details.get("line_no"))
-                    assigned_vars = details.get("assigned_vars", [])
-                    dependencies = details.get("dependencies", [])
-                    file_index = source_index.get(file_path, {})
+                    flush_pending_line(pending, frame_state)
+                    pending = make_pending_line(item, frame_state)
+                    continue
 
-                    target_symbols = {}
-                    for var_name in assigned_vars:
-                        symbol_kind = self._infer_assigned_kind(var_name, scope, line_no, file_index)
-                        target_symbols[var_name] = ensure_symbol(symbol_kind, var_name, scope, file_id, line_no)
+                if event_type == "CALL":
+                    callsite = match_callsite(pending, details.get("func"))
+                    if callsite is None:
+                        flush_pending_line(pending, frame_state)
+                        pending = None
+                    process_call_event(item, frame_state, callsite=callsite)
+                    continue
 
-                    for var_name, target_id in target_symbols.items():
-                        for dep_name in dependencies:
-                            source_id = resolve_dependency_symbol(dep_name, scope, file_path, file_id, line_no)
-                            source_kind = graph["symbols"][source_id][0]
-                            edge_key = (
-                                source_id,
-                                target_id,
-                                self._edge_kind_for_symbol(source_kind),
-                                line_no,
-                            )
-                            edge_hits[edge_key] += 1
+                if event_type == "EXCEPTION":
+                    flush_pending_line(pending, frame_state)
+                    pending = None
+                    add_step(
+                        frame_state.get("frame_id", ""),
+                        "exc",
+                        self._coerce_line_number(details.get("line_no")),
+                        [],
+                        [],
+                        {
+                            "exception_type": details.get("exception_type"),
+                            "stmt": "EXCEPTION",
+                        },
+                    )
+                    continue
 
-                    for var_name, target_id in target_symbols.items():
-                        latest_symbol[(file_id, scope, var_name)] = target_id
+                flush_pending_line(pending, frame_state)
+                pending = None
 
-                if "daughter_stack" in details:
-                    traverse(details["daughter_stack"])
+            flush_pending_line(pending, frame_state)
 
-        traverse(self.call_stack.get("execution_stack", []))
+        root_state = {
+            "frame_id": "",
+            "scope": "<root>",
+            "file_path": "",
+            "file_id": "",
+            "return_sources": set(),
+        }
+        process_event_list(self.call_stack.get("execution_stack", []), root_state)
 
         graph["edges"] = [
             [src, dst, kind, line_no, hits]
@@ -669,4 +1244,17 @@ class DependencyTree:
         graph["paths"] = self._build_paths(graph["edges"], graph["symbols"])
 
         self.dependency_by_file = graph
-        return graph
+        self.flow_trace = flow
+        self._artifact_cache = {"graph": graph, "flow": flow}
+        return self._artifact_cache
+
+    def parse_dependency(self):
+        """
+        Parse the execution stack into a compact dependency graph that is
+        optimized for downstream LLM consumption.
+        """
+        return self._build_semantic_artifacts()["graph"]
+
+    def parse_flow_trace(self):
+        """Parse the execution stack into a compact runtime flow trace."""
+        return self._build_semantic_artifacts()["flow"]

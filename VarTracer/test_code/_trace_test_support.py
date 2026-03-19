@@ -43,13 +43,16 @@ class TraceTestMixin:
                 sys.path[:] = old_sys_path
 
             exec_stack = vt.exec_stack_json(show_progress=False)
-            dep_tree = DependencyTree(call_stack=json.dumps(exec_stack)).parse_dependency()
+            parser = DependencyTree(call_stack=json.dumps(exec_stack))
+            dep_tree = parser.parse_dependency()
+            flow_trace = parser.parse_flow_trace()
             raw_result = vt.raw_result()
 
             return {
                 "script_path": script_path,
                 "exec_stack": exec_stack,
                 "dep_tree": dep_tree,
+                "flow_trace": flow_trace,
                 "raw_result": raw_result,
                 "vt": vt,
             }

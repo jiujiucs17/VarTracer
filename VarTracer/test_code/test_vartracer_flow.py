@@ -41,6 +41,35 @@ class TestVarTracerFlow(TraceTestMixin, unittest.TestCase):
 
         self.assertIn("items", self.incoming_source_names(dep_tree, target_info["id"]))
 
+    def test_dep_tree_threads_argument_return_and_caller_binding_into_one_path(self):
+        """A traced function call should extend the path through arg binding, callee work, and return binding."""
+        result = self.trace_source(
+            """
+            def inc(x):
+                y = x + 1
+                return y
+
+            a = 1
+            b = inc(a)
+            c = b + 2
+            """
+        )
+
+        dep_tree = result["dep_tree"]
+        a_info = self.find_var_info(dep_tree, "a")
+        x_info = self.find_var_info(dep_tree, "x")
+        y_info = self.find_var_info(dep_tree, "y")
+        b_info = self.find_var_info(dep_tree, "b")
+        c_info = self.find_var_info(dep_tree, "c")
+
+        self.assertIn("a", self.incoming_source_names(dep_tree, x_info["id"]))
+        self.assertIn("y", self.incoming_source_names(dep_tree, b_info["id"]))
+        self.assertIn("b", self.incoming_source_names(dep_tree, c_info["id"]))
+        self.assertIn(
+            [a_info["id"], x_info["id"], y_info["id"], b_info["id"], c_info["id"]],
+            dep_tree["paths"].get(c_info["id"], []),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

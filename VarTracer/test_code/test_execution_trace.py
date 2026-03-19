@@ -198,6 +198,52 @@ class TestExecutionTrace(TraceTestMixin, unittest.TestCase):
         self.assertIn("EDGE <module>::a<var> -> <module>::b<var> [data@2]", written)
         self.assertIn("PATH <module>::b<var> <=", written)
 
+    def test_flow_trace_contains_comment_frames_and_flow_steps(self):
+        """The flow trace should expose compact runtime flow with documented step semantics."""
+        result = self.trace_source(
+            """
+            def add(x, y):
+                total = x + y
+                return total
+
+            result = add(1, 2)
+            """
+        )
+
+        flow_trace = result["flow_trace"]
+        self.assertIn("_comment", flow_trace)
+        self.assertEqual(flow_trace["version"], "flow.v1")
+        self.assertTrue(flow_trace["frames"])
+        self.assertTrue(flow_trace["steps"])
+
+        ops = [step[2] for step in flow_trace["steps"]]
+        self.assertIn("call", ops)
+        self.assertIn("ret", ops)
+        self.assertIn("bind", ops)
+
+    def test_flow_trace_json_writes_output_file(self):
+        """The flow-trace exporter should persist the same structure it returns."""
+        result = self.trace_source(
+            """
+            def add(x, y):
+                return x + y
+
+            result = add(1, 2)
+            """
+        )
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            output = result["vt"].flow_trace_json(output_path=output_dir)
+            output_file = os.path.join(output_dir, "VTrace_flow_trace.json")
+
+            self.assertTrue(os.path.exists(output_file))
+            with open(output_file, "r", encoding="utf-8") as handle:
+                written = json.load(handle)
+
+        self.assertEqual(output, written)
+        self.assertIn("steps", written)
+        self.assertIn("_comment", written)
+
 
 if __name__ == "__main__":
     unittest.main()

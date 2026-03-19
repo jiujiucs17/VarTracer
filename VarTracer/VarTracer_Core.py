@@ -23,7 +23,7 @@ except ImportError:
     def tqdm(*args, **kwargs):
         return _NoOpTqdm()
 
-from .ASTParser import DEPENDENCY_GRAPH_COMMENT, DependencyTree, LineDependencyAnalyzer
+from .ASTParser import DEPENDENCY_GRAPH_COMMENT, FLOW_TRACE_COMMENT, DependencyTree, LineDependencyAnalyzer
 from .Utilities import *
 
 
@@ -36,6 +36,7 @@ class VarTracer:
         self.log_trace_progess = True  
         self.exec_stack = None # save processed execution stack in json format
         self.dep_tree = None  # save the dependency tree in json format
+        self.flow_trace = None  # save the runtime flow trace in json format
         self._statement_cache = {}
         self._internal_package_root = os.path.abspath(os.path.dirname(__file__))
 
@@ -501,6 +502,7 @@ class VarTracer:
                 self.exec_stack_json(output_path=None, show_progress=show_progress)
             dep_tree_parser = DependencyTree(call_stack=json.dumps(self.exec_stack))
             self.dep_tree = dep_tree_parser.parse_dependency()
+            self.flow_trace = dep_tree_parser.parse_flow_trace()
         elif "_comment" not in self.dep_tree:
             self.dep_tree = {
                 "_comment": DEPENDENCY_GRAPH_COMMENT,
@@ -516,6 +518,33 @@ class VarTracer:
                 print(f"Dependency tree JSON saved to '{output_file}'")
 
         return self.dep_tree
+
+    def flow_trace_json(self, output_path=None, output_name="VTrace_flow_trace.json", show_progress=False):
+        """
+        生成面向 LLM 的运行时 flow trace JSON 文件。如果 self.flow_trace 为空，则根据
+        self.exec_stack 生成。
+        """
+        if self.flow_trace is None:
+            if self.exec_stack is None:
+                self.exec_stack_json(output_path=None, show_progress=show_progress)
+            trace_parser = DependencyTree(call_stack=json.dumps(self.exec_stack))
+            self.dep_tree = trace_parser.parse_dependency()
+            self.flow_trace = trace_parser.parse_flow_trace()
+        elif "_comment" not in self.flow_trace:
+            self.flow_trace = {
+                "_comment": FLOW_TRACE_COMMENT,
+                **self.flow_trace,
+            }
+
+        if output_path:
+            os.makedirs(output_path, exist_ok=True)
+            output_file = os.path.join(output_path, output_name)
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(self.flow_trace, f, indent=4)
+            if self.verbose:
+                print(f"Flow trace JSON saved to '{output_file}'")
+
+        return self.flow_trace
 
     def dep_tree_edgelist(self, output_path=None, output_name="VTrace_dep_tree.edgelist", show_progress=False):
         """

@@ -848,7 +848,7 @@ label_meanings = {
     "back to function granularity": "Hyperlink to the Function Granularity sheet, which shows all Function Events. While highlighting the current context.",
 }
 
-def extract_unique_functions(exec_stack0, exec_stack1, dep_tree0, dep_tree1, output_path):
+def extract_unique_functions(exec_stack0, exec_stack1, output_path):
     """
     对比两个 execution_stack，提取出只在 exec_stack1 中出现而未在 exec_stack0 中出现的 functions，
     并提取这些 functions 的依赖关系（只保留在 unique set 中的 function names），
