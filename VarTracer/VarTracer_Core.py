@@ -25,6 +25,7 @@ except ImportError:
 
 from .ASTParser import DEPENDENCY_GRAPH_COMMENT, FLOW_TRACE_COMMENT, DependencyTree, LineDependencyAnalyzer
 from .Utilities import *
+from .Utilities import _dep_tree_to_edgelist_text
 
 
 class VarTracer:

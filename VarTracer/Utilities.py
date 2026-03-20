@@ -67,33 +67,71 @@ def _dep_tree_symbol_label(record):
     return f"{record['scope']}::{record['name']}"
 
 
+def _compact_json_text(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
 def _dep_tree_to_edgelist_text(dep_tree):
     symbols = dep_tree.get("symbols", {})
     files = dep_tree.get("files", {})
-    multi_file = len(files) > 1
-
-    def format_symbol(symbol_id):
-        kind, name, scope, file_id, _line_no = symbols[symbol_id]
-        label = f"{scope}::{name}"
-        if multi_file:
-            file_label = os.path.basename(files.get(file_id, file_id))
-            label = f"{file_label}::{label}"
-        return f"{label}<{kind}>"
-
     lines = [
-        "# Read as: EDGE src -> dst [kind@line xhits]; PATH sink <= source -> ... -> sink.",
-        "# src/dst use scope::name<kind>; file basename is prefixed only when multiple files appear.",
+        "# Read as: META metadata; FIL file; SYM symbol; EDG edge; PTH path.",
+        (
+            "# Key map: "
+            "v=version,ts=trace_started_at,"
+            "id=record id,p=path,bn=file basename,"
+            "k=kind,n=name,s=scope,f=file_id,l=line,"
+            "src=source_symbol_id,dst=target_symbol_id,h=hits,"
+            "sink=sink_symbol_id,seq=ordered symbol ids in one dependency path"
+        ),
+        "META " + _compact_json_text({
+            "v": dep_tree.get("version"),
+            "ts": dep_tree.get("trace_started_at"),
+            "file_count": len(files),
+            "symbol_count": len(symbols),
+            "edge_count": len(dep_tree.get("edges", [])),
+            "sink_count": len(dep_tree.get("paths", {})),
+        }),
     ]
-    for src, dst, kind, line_no, hits in dep_tree.get("edges", []):
-        hit_suffix = f" x{hits}" if hits > 1 else ""
-        lines.append(
-            f"EDGE {format_symbol(src)} -> {format_symbol(dst)} [{kind}@{line_no}{hit_suffix}]"
-        )
+
+    for file_id, path in files.items():
+        lines.append("FIL " + _compact_json_text({
+            "id": file_id,
+            "p": path,
+            "bn": os.path.basename(path) if path else "",
+        }))
+
+    for symbol_id, symbol_meta in symbols.items():
+        if len(symbol_meta) < 5:
+            continue
+        kind, name, scope, file_id, line_no = symbol_meta
+        lines.append("SYM " + _compact_json_text({
+            "id": symbol_id,
+            "k": kind,
+            "n": name,
+            "s": scope,
+            "f": file_id,
+            "l": line_no,
+        }))
+
+    for edge in dep_tree.get("edges", []):
+        if len(edge) < 5:
+            continue
+        src, dst, kind, line_no, hits = edge
+        lines.append("EDG " + _compact_json_text({
+            "src": src,
+            "dst": dst,
+            "k": kind,
+            "l": line_no,
+            "h": hits,
+        }))
 
     for sink_id, sink_paths in dep_tree.get("paths", {}).items():
         for path in sink_paths:
-            rendered = " -> ".join(format_symbol(symbol_id) for symbol_id in path)
-            lines.append(f"PATH {format_symbol(sink_id)} <= {rendered}")
+            lines.append("PTH " + _compact_json_text({
+                "sink": sink_id,
+                "seq": path,
+            }))
 
     return "\n".join(lines)
 
@@ -932,9 +970,6 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
         except ValueError:
             return path
 
-    def compact_json(value):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
     def compact_bool(value):
         return 1 if value else 0
 
@@ -965,7 +1000,7 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
                 "ev=event_count,cal/call=line-call counts,ret=return_count,exc=exception_count,"
                 "dep=max_call_depth,smp=sample_executed_lines"
             ),
-            "CMP " + compact_json({
+            "CMP " + _compact_json_text({
                 "a": comparison.get("trace_a_role"),
                 "b": comparison.get("trace_b_role"),
                 "rel": comparison.get("comparison_type"),
@@ -976,7 +1011,7 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
         ]
 
         for record in payload.get("unique_modules", []):
-            lines.append("MOD " + compact_json({
+            lines.append("MOD " + _compact_json_text({
                 "n": record.get("module_name"),
                 "top": compact_bool(record.get("is_top_level_script")),
                 "fps": record.get("file_paths", []),
@@ -992,7 +1027,7 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
             }))
 
         for record in payload.get("unique_files", []):
-            lines.append("FIL " + compact_json({
+            lines.append("FIL " + _compact_json_text({
                 "p": record.get("path"),
                 "rp": record.get("relative_path"),
                 "bn": record.get("file_name"),
@@ -1008,7 +1043,7 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
             }))
 
         for record in payload.get("unique_functions", []):
-            lines.append("FUN " + compact_json({
+            lines.append("FUN " + _compact_json_text({
                 "n": record.get("name"),
                 "q": record.get("qualified_name"),
                 "mod": record.get("module_name"),

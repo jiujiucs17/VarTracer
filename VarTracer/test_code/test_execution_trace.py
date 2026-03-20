@@ -178,7 +178,7 @@ class TestExecutionTrace(TraceTestMixin, unittest.TestCase):
         self.assertIn("edges", written)
 
     def test_dep_tree_edgelist_writes_compact_text_output(self):
-        """The edge-list exporter should render readable EDGE and PATH lines."""
+        """The edge-list exporter should render complete compact records for LLM use."""
         result = self.trace_source(
             """
             a = 1
@@ -195,8 +195,11 @@ class TestExecutionTrace(TraceTestMixin, unittest.TestCase):
                 written = handle.read()
 
         self.assertEqual(output, written)
-        self.assertIn("EDGE <module>::a<var> -> <module>::b<var> [data@2]", written)
-        self.assertIn("PATH <module>::b<var> <=", written)
+        self.assertIn("META ", written)
+        self.assertIn('FIL {"id":"f1"', written)
+        self.assertIn('SYM {"id":"s1"', written)
+        self.assertIn('EDG {"src":"s1","dst":"s2","k":"data","l":2,"h":1}', written)
+        self.assertIn('PTH {"sink":"s2","seq":["s1","s2"]}', written)
 
     def test_flow_trace_contains_comment_frames_and_flow_steps(self):
         """The flow trace should expose compact runtime flow with documented step semantics."""
