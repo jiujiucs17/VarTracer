@@ -1,5 +1,4 @@
 import ast
-import inspect
 import os
 import subprocess
 import json
@@ -19,11 +18,11 @@ from datetime import datetime
 import re
 
 def safe_serialize(obj):
-        """将对象转换为字符串表示"""
-        try:
-            return str(obj)
-        except Exception:
-            return "<unserializable>"
+    """将对象转换为字符串表示"""
+    try:
+        return str(obj)
+    except Exception:
+        return "<unserializable>"
         
 def create_event(event_type, base_info, extra_info=None):
     """创建一个事件字典"""
@@ -136,27 +135,29 @@ def _dep_tree_to_edgelist_text(dep_tree):
     return "\n".join(lines)
 
 class FrameSnapshot:
-    def __init__(self, frame):
-        self.file_name = frame.f_code.co_filename
+    __slots__ = ("file_name", "function_name", "line_no", "locals", "globals", "module_name")
+
+    def __init__(self, frame, capture_scope_names=False):
+        self.file_name = os.path.abspath(frame.f_code.co_filename)
         self.function_name = frame.f_code.co_name
         self.line_no = frame.f_lineno
-        self.locals = frame.f_locals.copy()
-        self.globals = {k: str(v) for k, v in frame.f_globals.items() if k in frame.f_code.co_names}
-        self.code_context = self._get_code_context(frame)
-
-        self.package_name = frame.f_globals.get('__package__', None)
+        if capture_scope_names:
+            self.locals = self._snapshot_local_names(frame)
+            self.globals = self._snapshot_global_names(frame)
+        else:
+            self.locals = ()
+            self.globals = ()
         self.module_name = frame.f_globals.get('__name__', None) 
 
-    def _get_code_context(self, frame, context_lines=2):
-        """Get the source code context around the current line."""
-        try:
-            lines, start = inspect.getsourcelines(frame.f_code)
-            index = frame.f_lineno - start
-            lower = max(index - context_lines, 0)
-            upper = min(index + context_lines + 1, len(lines))
-            return [line.rstrip('\n') for line in lines[lower:upper]]
-        except (OSError, TypeError):
-            return []
+    def _snapshot_local_names(self, frame):
+        return list(frame.f_locals.keys())
+
+    def _snapshot_global_names(self, frame):
+        return [
+            name
+            for name in frame.f_code.co_names
+            if name in frame.f_globals
+        ]
 
     def to_dict(self):
         """Convert the FrameSnapshot to a dictionary for easier serialization."""
@@ -166,7 +167,6 @@ class FrameSnapshot:
             "line_no": self.line_no,
             "locals": self.locals,
             "globals": self.globals,
-            "code_context": self.code_context,
         }
 
     def __repr__(self):
@@ -241,7 +241,7 @@ def extension_interface(file_path, print=False):
                 "\n",
                 "vt.stop()\n",
                 "exec_stack_json = vt.exec_stack_json()\n",
-                "dep_tree = DependencyTree(call_stack=json.dumps(exec_stack_json))\n",
+                "dep_tree = DependencyTree(call_stack=exec_stack_json)\n",
                 "dep_dic = dep_tree.parse_dependency()\n",
                 "\n",
                 "result_json = {\n",
@@ -1623,13 +1623,13 @@ def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folde
     }
 
     os.makedirs(output_dir, exist_ok=True)
-    output_file = os.path.join(output_dir, "unique_artifacts_dep_tree.json")
+    output_file = os.path.join(output_dir, "unique_dep_tree.json")
     with open(output_file, "w", encoding="utf-8") as handle:
         json.dump(filtered_dep_tree, handle, indent=4, ensure_ascii=False)
 
     edgelist_output_file = None
     if generate_llm_txt:
-        edgelist_output_file = os.path.join(output_dir, "unique_artifacts_dep_tree_edgelist.txt")
+        edgelist_output_file = os.path.join(output_dir, "unique_dep_tree_edgelist.txt")
         with open(edgelist_output_file, "w", encoding="utf-8") as handle:
             handle.write(_dep_tree_to_edgelist_text(filtered_dep_tree))
 

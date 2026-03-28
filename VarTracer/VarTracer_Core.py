@@ -5,6 +5,7 @@ import sysconfig
 import pkgutil
 import json
 import ast
+from collections import deque
 from datetime import datetime
 
 try:
@@ -33,8 +34,6 @@ class VarTracer:
         
         # Initialize the VTracer instance
         self.raw_logs = []
-        self.last_filename = None  
-        self.log_trace_progess = True  
         self.exec_stack = None # save processed execution stack in json format
         self.dep_tree = None  # save the dependency tree in json format
         self.flow_trace = None  # save the runtime flow trace in json format
@@ -59,15 +58,6 @@ class VarTracer:
         # Initialize the ignored functions
         self.ignored_funcs = set(['<module>']) if self.ignore_module_funcs else set()  
 
-
-    def _get_package_name(self, frame_snapshot):
-        """Get the package name from the frame snapshot."""
-        if frame_snapshot.package_name:
-            return frame_snapshot.package_name
-        if frame_snapshot.module_name and frame_snapshot.module_name != '__main__':
-            return frame_snapshot.module_name
-        return '(unknown-package)'
-    
     def _get_module_name(self, frame_snapshot):
         """Get the full module name for the given frame snapshot."""       
         if frame_snapshot.module_name and frame_snapshot.module_name != '__main__':
@@ -105,25 +95,6 @@ class VarTracer:
         collect_modules(stdlib_path)
         return self._expand_module_names(stdlib_modules)
     
-    def _shorten_path(self, path, max_len=60):
-        path = os.path.abspath(path)
-        parts = path.split(os.sep)
-
-        if len(path) <= max_len:
-            return path
-
-        if len(parts) <= 3:
-            return path  # 不需要缩短
-
-        return os.sep.join([
-            parts[0],              # 顶层目录（如 'C:' 或 '/'）
-            parts[1],              # 第二层目录（如 'Users' 或 'home'）
-            '...',                 # 中间省略
-            parts[-3],             # 倒数第三部分（如 'Documents' 或 'my_project'）
-            parts[-2],             # 倒数第二部分（目录）
-            parts[-1]              # 文件名
-        ])
-
     def _trace(self, frame, event, arg):
         filename = os.path.abspath(frame.f_code.co_filename)
         # 提取出当前 module name 的顶层名字
@@ -144,57 +115,13 @@ class VarTracer:
 
         # 保存原始事件
         self.raw_logs.append({
-            'frame': FrameSnapshot(frame),
+            'frame': FrameSnapshot(frame, capture_scope_names=(event == 'line')),
             'event': event,
             'arg': arg
         })
 
-        # # Curently disabled to speed up the trace, uncomment to enable
-        # # 如果启用了 log_trace_progess，则在控制台动态显示文件名和行号
-        # if self.log_trace_progess:
-        #     file_name = os.path.basename(frame.f_code.co_filename)  # 获取文件名
-        #     line_no = frame.f_lineno  # 获取行号
-        #     message = f"Tracing: {file_name} - Line {line_no}"
-
-        #     # 获取终端宽度
-        #     try:
-        #         terminal_width = os.get_terminal_size().columns
-        #     except OSError:
-        #         terminal_width = 80  # 默认宽度
-
-        #     # 计算需要填充的空格数量
-        #     padding = max(terminal_width - len(message), 0)
-        #     sys.stdout.write(f"\r{message}{' ' * padding}")  # 动态更新
-        #     sys.stdout.flush()
-
         return self._trace
     
-    def _clean(self):
-        """清理 raw_logs 中属于标准库模块的记录。"""
-        stdlib_modules = self._get_standard_library_modules()
-            
-        # Expand and merge the ignore_modules and stdlib_modules sets
-        ignore_modules = self.ignored_modules
-        ignore_modules.update(stdlib_modules)  # Use update instead of add
-
-        def is_stdlib(frame_snapshot):
-            module_name = self._get_module_name(frame_snapshot)
-            root_module = module_name.split('.')[0]
-            return root_module in ignore_modules
-
-        original_count = len(self.raw_logs)
-
-        self.raw_logs = [
-            record for record in self.raw_logs
-            if not is_stdlib(record['frame'])
-        ]
-        cleaned_count = len(self.raw_logs)
-
-        # print(f"清理完成：从 {original_count} 条日志中移除 {original_count - cleaned_count} 条标准库记录。")
-        # print console log with english
-        if self.verbose:
-            print(f"Note that the execution log is cleaned: Removed {original_count - cleaned_count} standard Python library records from {original_count} logs. Initalize VTracer instance using 'VTracer(clean_stdlib=False)' to disable this feature.")
-
     def _analyze_dependencies(self, line_content, local_vars, global_vars):
         """
         使用 DependencyAnalyzer 分析代码行中的依赖关系。
@@ -205,40 +132,39 @@ class VarTracer:
     def _get_statement_cache(self, filename):
         filename = os.path.abspath(filename)
         if filename not in self._statement_cache:
-            cache_entry = {"stmt_nodes": []}
+            cache_entry = {"stmt_by_line": {}}
             try:
                 with open(filename, 'r', encoding='utf-8') as handle:
                     source = handle.read()
                 tree = ast.parse(source, filename=filename)
-                cache_entry["stmt_nodes"] = [
+                stmt_nodes = [
                     node for node in ast.walk(tree)
                     if isinstance(node, ast.stmt) and hasattr(node, "lineno") and hasattr(node, "end_lineno")
                 ]
+                line_to_stmt = {}
+                for node in stmt_nodes:
+                    key = self._statement_key(node)
+                    for line_no in range(node.lineno, getattr(node, "end_lineno", node.lineno) + 1):
+                        current = line_to_stmt.get(line_no)
+                        if current is None or key < current[0]:
+                            line_to_stmt[line_no] = (key, node)
+                cache_entry["stmt_by_line"] = {
+                    line_no: cached_node
+                    for line_no, (_key, cached_node) in line_to_stmt.items()
+                }
             except (OSError, SyntaxError):
                 pass
             self._statement_cache[filename] = cache_entry
         return self._statement_cache[filename]
 
+    def _statement_key(self, node):
+        end_lineno = getattr(node, "end_lineno", node.lineno)
+        end_col = getattr(node, "end_col_offset", 0)
+        start_col = getattr(node, "col_offset", 0)
+        return (end_lineno - node.lineno, end_col - start_col)
+
     def _get_statement_node(self, filename, lineno):
-        stmt_nodes = self._get_statement_cache(filename).get("stmt_nodes", [])
-
-        def statement_key(node):
-            end_lineno = getattr(node, "end_lineno", node.lineno)
-            end_col = getattr(node, "end_col_offset", 0)
-            start_col = getattr(node, "col_offset", 0)
-            return (end_lineno - node.lineno, end_col - start_col)
-
-        starting_here = [node for node in stmt_nodes if node.lineno == lineno]
-        if starting_here:
-            return min(starting_here, key=statement_key)
-
-        covering_line = [
-            node for node in stmt_nodes
-            if node.lineno <= lineno <= getattr(node, "end_lineno", node.lineno)
-        ]
-        if covering_line:
-            return min(covering_line, key=statement_key)
-        return None
+        return self._get_statement_cache(filename).get("stmt_by_line", {}).get(lineno)
 
     def _analyze_line_event(self, filename, lineno, line_content, local_vars, global_vars):
         stmt_node = self._get_statement_node(filename, lineno)
@@ -251,7 +177,6 @@ class VarTracer:
     def start(self):
         # 可以使用pipe来实现多进程间传递数据，并且多平台通用，来提升trace速度。
         self.raw_logs.clear()
-        self.last_filename = None
 
         # Install the global tracing function
         sys.settrace(self._trace)
@@ -397,7 +322,7 @@ class VarTracer:
             """递归处理作用域，生成嵌套的 JSON 堆栈，并记录调用深度"""
             stack = []
             while logs:
-                record = logs.pop(0)
+                record = logs.popleft()
                 frame = record['frame']
                 event = record['event']
                 arg = record['arg']
@@ -405,11 +330,10 @@ class VarTracer:
                 if pbar:
                     pbar.update(1)
 
-                filename = os.path.abspath(frame.file_name)
+                filename = frame.file_name
                 lineno = frame.line_no
                 funcname = frame.function_name
                 module = self._get_module_name(frame)
-                line_content = linecache.getline(filename, lineno).strip()
 
                 # 构造基础信息
                 base_info = {
@@ -428,6 +352,7 @@ class VarTracer:
                     stack.append(return_event)
                     break
                 elif event == 'line':
+                    line_content = linecache.getline(filename, lineno).strip()
                     analysis_result = self._analyze_line_event(filename, lineno, line_content, frame.locals, frame.globals)
                     dependencies = analysis_result.get("dependencies", set())
                     assigned_vars = analysis_result.get("assigned_vars", set())
@@ -438,8 +363,6 @@ class VarTracer:
                             **base_info,
                             "line_no": safe_serialize(lineno),
                             "line_content": safe_serialize(line_content),
-                            # "locals": {k: safe_serialize(v) for k, v in frame.locals.items()},
-                            # "globals": {k: safe_serialize(v) for k, v in frame.globals.items()},
                             "dependencies": [safe_serialize(dep) for dep in dependencies],
                             "assigned_vars": [safe_serialize(var) for var in assigned_vars],
                         },
@@ -447,6 +370,7 @@ class VarTracer:
                     stack.append(line_event)
                 elif event == 'exception':
                     exc_type, exc_value, _ = arg
+                    line_content = linecache.getline(filename, lineno).strip()
                     exception_event = create_event(
                         "EXCEPTION",
                         {
@@ -471,7 +395,7 @@ class VarTracer:
             return stack
 
         # 开始处理 raw_logs
-        logs_copy = self.raw_logs.copy()
+        logs_copy = deque(self.raw_logs)
         pbar = tqdm(total=len(logs_copy), desc="Processing logs", unit="log") if show_progress else None
         result = process_scope(logs_copy, depth=0, pbar=pbar if show_progress else None)
         if pbar:
@@ -501,7 +425,7 @@ class VarTracer:
         if self.dep_tree is None:
             if self.exec_stack is None:
                 self.exec_stack_json(output_path=None, show_progress=show_progress)
-            dep_tree_parser = DependencyTree(call_stack=json.dumps(self.exec_stack))
+            dep_tree_parser = DependencyTree(call_stack=self.exec_stack)
             self.dep_tree = dep_tree_parser.parse_dependency()
             self.flow_trace = dep_tree_parser.parse_flow_trace()
         elif "_comment" not in self.dep_tree:
@@ -528,7 +452,7 @@ class VarTracer:
         if self.flow_trace is None:
             if self.exec_stack is None:
                 self.exec_stack_json(output_path=None, show_progress=show_progress)
-            trace_parser = DependencyTree(call_stack=json.dumps(self.exec_stack))
+            trace_parser = DependencyTree(call_stack=self.exec_stack)
             self.dep_tree = trace_parser.parse_dependency()
             self.flow_trace = trace_parser.parse_flow_trace()
         elif "_comment" not in self.flow_trace:
@@ -658,7 +582,7 @@ if __name__ == "__main__":
     vt.exec_stack_txt(output_path=output_dir)
     exec_stack_json = vt.exec_stack_json(output_path=output_dir)
 
-    dep_tree = DependencyTree(call_stack=json.dumps(exec_stack_json))
+    dep_tree = DependencyTree(call_stack=exec_stack_json)
     dep_dic = dep_tree.parse_dependency()
 
     # # 打印dep_dic这个字典中的所有内容

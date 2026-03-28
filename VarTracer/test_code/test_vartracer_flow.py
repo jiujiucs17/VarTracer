@@ -70,6 +70,53 @@ class TestVarTracerFlow(TraceTestMixin, unittest.TestCase):
             dep_tree["paths"].get(c_info["id"], []),
         )
 
+    def test_dep_tree_threads_nested_return_forwarding_across_multiple_calls(self):
+        """A returned inner-call result should stay connected back to the original caller input."""
+        result = self.trace_source(
+            """
+            def helper(x):
+                return x + 1
+
+            def outer(y):
+                return helper(y)
+
+            seed = 4
+            z = outer(seed)
+            """
+        )
+
+        dep_tree = result["dep_tree"]
+        seed_info = self.find_var_info(dep_tree, "seed")
+        y_info = self.find_var_info(dep_tree, "y")
+        x_info = self.find_var_info(dep_tree, "x")
+        z_info = self.find_var_info(dep_tree, "z")
+
+        self.assertIn("seed", self.incoming_source_names(dep_tree, y_info["id"]))
+        self.assertIn("y", self.incoming_source_names(dep_tree, x_info["id"]))
+        self.assertIn("x", self.incoming_source_names(dep_tree, z_info["id"]))
+        self.assertIn(
+            [seed_info["id"], y_info["id"], x_info["id"], z_info["id"]],
+            dep_tree["paths"].get(z_info["id"], []),
+        )
+
+    def test_dep_tree_keeps_fallback_dependencies_for_untraced_method_calls(self):
+        """When a callee is not traced, the assignment should still retain receiver and argument dependencies."""
+        result = self.trace_source(
+            """
+            sep = "-"
+            parts = ["a", "b"]
+            text = sep.join(parts)
+            """
+        )
+
+        dep_tree = result["dep_tree"]
+        text_info = self.find_var_info(dep_tree, "text")
+        text_sources = self.incoming_source_names(dep_tree, text_info["id"])
+
+        self.assertIn("sep", text_sources)
+        self.assertIn("parts", text_sources)
+        self.assertIn("sep.join", text_sources)
+
 
 if __name__ == "__main__":
     unittest.main()

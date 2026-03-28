@@ -224,6 +224,32 @@ class TestExecutionTrace(TraceTestMixin, unittest.TestCase):
         self.assertIn("ret", ops)
         self.assertIn("bind", ops)
 
+    def test_flow_trace_records_conditional_reads_and_fallback_bind_steps(self):
+        """Conditional tests and untraced calls should still surface as semantic flow steps."""
+        result = self.trace_source(
+            """
+            x = 1
+            if x > 0:
+                y = x
+
+            sep = "-"
+            parts = ["a", "b"]
+            text = sep.join(parts)
+            """
+        )
+
+        flow_trace = result["flow_trace"]
+        cond_steps = [step for step in flow_trace["steps"] if step[2] == "cond"]
+        bind_steps = [step for step in flow_trace["steps"] if step[2] == "bind"]
+
+        self.assertEqual(len(cond_steps), 1)
+        self.assertEqual(cond_steps[0][3], 2)
+        self.assertEqual(cond_steps[0][6]["stmt"], "If")
+
+        fallback_bind = next(step for step in bind_steps if step[6].get("callee") == "sep.join")
+        self.assertTrue(fallback_bind[6]["fallback"])
+        self.assertEqual(fallback_bind[6]["stmt"], "Assign")
+
     def test_flow_trace_json_writes_output_file(self):
         """The flow-trace exporter should persist the same structure it returns."""
         result = self.trace_source(

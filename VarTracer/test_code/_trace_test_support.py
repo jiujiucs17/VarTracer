@@ -1,4 +1,3 @@
-import json
 import os
 import sys
 import tempfile
@@ -43,7 +42,7 @@ class TraceTestMixin:
                 sys.path[:] = old_sys_path
 
             exec_stack = vt.exec_stack_json(show_progress=False)
-            parser = DependencyTree(call_stack=json.dumps(exec_stack))
+            parser = DependencyTree(call_stack=exec_stack)
             dep_tree = parser.parse_dependency()
             flow_trace = parser.parse_flow_trace()
             raw_result = vt.raw_result()

@@ -567,12 +567,15 @@ class DependencyTree:
         self._artifact_cache = None
 
         if call_stack:
-            try:
-                self.call_stack = json.loads(call_stack)
-                if not isinstance(self.call_stack, dict):
-                    raise ValueError("call_stack must be a JSON array.")
-            except (json.JSONDecodeError, ValueError) as e:
-                raise ValueError(f"Invalid JSON for call_stack: {e}")
+            if isinstance(call_stack, dict):
+                self.call_stack = call_stack
+            else:
+                try:
+                    self.call_stack = json.loads(call_stack)
+                    if not isinstance(self.call_stack, dict):
+                        raise ValueError("call_stack must be a JSON object.")
+                except (TypeError, json.JSONDecodeError, ValueError) as e:
+                    raise ValueError(f"Invalid JSON for call_stack: {e}")
         self.get_files()
         # for item in self.files:
         #     print(item)
@@ -684,7 +687,7 @@ class DependencyTree:
                 "param_order_by_scope": {},
                 "defs_by_scope": {},
                 "defs_by_name": {},
-                "stmt_nodes": [],
+                "stmt_by_line": {},
             }
             if os.path.exists(file_path):
                 try:
@@ -696,10 +699,21 @@ class DependencyTree:
                     index["param_order_by_scope"] = indexer.param_order_by_scope
                     index["defs_by_scope"] = indexer.defs_by_scope
                     index["defs_by_name"] = indexer.defs_by_name
-                    index["stmt_nodes"] = [
+                    stmt_nodes = [
                         node for node in ast.walk(tree)
                         if isinstance(node, ast.stmt) and hasattr(node, "lineno") and hasattr(node, "end_lineno")
                     ]
+                    line_to_stmt = {}
+                    for node in stmt_nodes:
+                        key = self._statement_key(node)
+                        for line_no in range(node.lineno, getattr(node, "end_lineno", node.lineno) + 1):
+                            current = line_to_stmt.get(line_no)
+                            if current is None or key < current[0]:
+                                line_to_stmt[line_no] = (key, node)
+                    index["stmt_by_line"] = {
+                        line_no: cached_node
+                        for line_no, (_key, cached_node) in line_to_stmt.items()
+                    }
                 except (OSError, SyntaxError):
                     pass
             source_index[file_path] = index
@@ -707,26 +721,14 @@ class DependencyTree:
         self._source_index_cache = source_index
         return source_index
 
+    def _statement_key(self, node):
+        end_lineno = getattr(node, "end_lineno", node.lineno)
+        end_col = getattr(node, "end_col_offset", 0)
+        start_col = getattr(node, "col_offset", 0)
+        return (end_lineno - node.lineno, end_col - start_col)
+
     def _get_statement_node(self, file_index, line_no):
-        stmt_nodes = file_index.get("stmt_nodes", [])
-
-        def statement_key(node):
-            end_lineno = getattr(node, "end_lineno", node.lineno)
-            end_col = getattr(node, "end_col_offset", 0)
-            start_col = getattr(node, "col_offset", 0)
-            return (end_lineno - node.lineno, end_col - start_col)
-
-        starting_here = [node for node in stmt_nodes if node.lineno == line_no]
-        if starting_here:
-            return min(starting_here, key=statement_key)
-
-        covering_line = [
-            node for node in stmt_nodes
-            if node.lineno <= line_no <= getattr(node, "end_lineno", node.lineno)
-        ]
-        if covering_line:
-            return min(covering_line, key=statement_key)
-        return None
+        return file_index.get("stmt_by_line", {}).get(line_no)
 
     def _infer_assigned_kind(self, name, scope, line_no, file_index):
         if name.endswith("[]"):
@@ -816,6 +818,8 @@ class DependencyTree:
         symbol_by_key = {}
         latest_symbol = {}
         edge_hits = defaultdict(int)
+        statement_analysis_cache = {}
+        target_symbol_cache = {}
         next_symbol_id = 1
         next_frame_id = 1
         next_step_seq = 1
@@ -898,26 +902,42 @@ class DependencyTree:
             next_step_seq += 1
 
         def ensure_targets(target_names, scope, file_id, line_no, file_index):
+            cache_key = (file_id, scope, line_no, tuple(target_names))
+            cached_targets = target_symbol_cache.get(cache_key)
+            if cached_targets is not None:
+                return cached_targets
+
             targets = {}
             for var_name in target_names:
                 symbol_kind = self._infer_assigned_kind(var_name, scope, line_no, file_index)
                 targets[var_name] = ensure_symbol(symbol_kind, var_name, scope, file_id, line_no)
+
+            target_symbol_cache[cache_key] = targets
             return targets
 
         def analyze_statement(details, file_index):
-            dependencies = details.get("dependencies", [])
-            assigned_vars = details.get("assigned_vars", [])
+            dependencies = tuple(details.get("dependencies", []))
+            assigned_vars = tuple(details.get("assigned_vars", []))
             line_no = self._coerce_line_number(details.get("line_no"))
             stmt_node = self._get_statement_node(file_index, line_no)
+            cache_key = (stmt_node, dependencies, assigned_vars, line_no)
+            cached_statement = statement_analysis_cache.get(cache_key)
+            if cached_statement is not None:
+                return cached_statement
+
             if stmt_node is None:
-                return {
+                statement = {
                     "stmt_kind": "Unknown",
                     "result_kind": "assign" if assigned_vars else "none",
                     "result_targets": list(assigned_vars),
                     "callsites": [],
                     "residual_dependencies": list(dependencies),
                 }
-            return RuntimeStatementAnalyzer(dependencies, assigned_vars).analyze(stmt_node)
+            else:
+                statement = RuntimeStatementAnalyzer(dependencies, assigned_vars).analyze(stmt_node)
+
+            statement_analysis_cache[cache_key] = statement
+            return statement
 
         def make_pending_line(item, frame_state):
             details = item.get("details", {})
