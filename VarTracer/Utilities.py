@@ -920,7 +920,7 @@ label_meanings = {
 
 def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate_llm_txt=False):
     """
-    对比两个 execution trace，输出 trace A 相对于 trace B 的 unique modules/files/functions。
+    对比两个 execution trace，输出 trace A 相对于 trace B 的 unique functions。
 
     参数约定：
     - exec_stack_1: execution trace A（feature positive）
@@ -940,8 +940,6 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
     输出 JSON 结构：
     {
         "comparison": {...},
-        "unique_modules": [...],
-        "unique_files": [...],
         "unique_functions": [...]
     }
     """
@@ -981,20 +979,54 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
             packed.append(f"{line_no}:{line_content}")
         return packed
 
+    def drop_empty_fields(mapping):
+        return {
+            key: value
+            for key, value in mapping.items()
+            if value not in (None, "", [], {})
+        }
+
     def build_llm_text(payload):
         comparison = payload.get("comparison", {})
+        function_records = payload.get("unique_functions", [])
+
+        module_symbols = {}
+        file_symbols = {}
+        class_symbols = {}
+        scope_symbols = {}
+        file_meta = {}
+
+        def assign_symbol_id(container, value, prefix):
+            if not value:
+                return None
+            if value not in container:
+                container[value] = f"{prefix}{len(container) + 1}"
+            return container[value]
+
+        for record in function_records:
+            assign_symbol_id(module_symbols, record.get("module_name"), "m")
+            file_path = record.get("path")
+            file_id = assign_symbol_id(file_symbols, file_path, "f")
+            if file_path and file_id and file_path not in file_meta:
+                file_meta[file_path] = {
+                    "rp": record.get("relative_path"),
+                    "bn": record.get("file_name"),
+                }
+            assign_symbol_id(class_symbols, record.get("class_name"), "c")
+            assign_symbol_id(scope_symbols, record.get("parent_scope"), "s")
+
         lines = [
-            "# Read as: CMP comparison; MOD unique module; FIL unique file; FUN unique function.",
+            "# Read as: CMP comparison; SYM shared symbol; FUN unique function.",
             (
                 "# Key map: "
                 "a=trace_a_role,b=trace_b_role,rel=comparison_type,"
-                "um/uf/ufn=unique counts,"
-                "n=name,module_name,q=qualified_name,top=is_top_level_script,"
+                "ufn=unique function count,"
+                "id=symbol id,k=symbol kind,v=symbol value,"
                 "p=path,rp=relative_path,bn=file_name,"
-                "fps=file_paths,bns=file_names,mods=module_names,fns=function_names,"
-                "fc/file_count,mc/module_count,fnc=function_count,"
+                "n=name,q=qualified_name,mid=module_symbol_id,fid=file_symbol_id,"
+                "cid=class_symbol_id,sid=parent_scope_symbol_id,"
                 "def=defined_line_number,end=end_line_number,"
-                "type=definition_type,cls=class_name,parent=parent_scope,"
+                "type=definition_type,"
                 "async=is_async,src=definition_found_in_source,"
                 "first=first_seen_line_number,obs=observed_line_numbers,"
                 "ev=event_count,cal/call=line-call counts,ret=return_count,exc=exception_count,"
@@ -1004,57 +1036,52 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
                 "a": comparison.get("trace_a_role"),
                 "b": comparison.get("trace_b_role"),
                 "rel": comparison.get("comparison_type"),
-                "um": comparison.get("unique_module_count"),
-                "uf": comparison.get("unique_file_count"),
                 "ufn": comparison.get("unique_function_count"),
             }),
         ]
 
-        for record in payload.get("unique_modules", []):
-            lines.append("MOD " + _compact_json_text({
-                "n": record.get("module_name"),
-                "top": compact_bool(record.get("is_top_level_script")),
-                "fps": record.get("file_paths", []),
-                "bns": record.get("file_names", []),
-                "fns": record.get("function_names", []),
-                "fc": record.get("file_count"),
-                "fnc": record.get("function_count"),
-                "ev": record.get("event_count_in_trace_a"),
-                "ln": record.get("line_event_count_in_trace_a"),
-                "cal": record.get("call_event_count_in_trace_a"),
-                "dep": record.get("max_call_depth"),
-                "first": record.get("first_seen_line_number"),
+        for module_name, symbol_id in module_symbols.items():
+            lines.append("SYM " + _compact_json_text({
+                "id": symbol_id,
+                "k": "mod",
+                "v": module_name,
             }))
 
-        for record in payload.get("unique_files", []):
-            lines.append("FIL " + _compact_json_text({
-                "p": record.get("path"),
-                "rp": record.get("relative_path"),
-                "bn": record.get("file_name"),
-                "mods": record.get("module_names", []),
-                "fns": record.get("function_names", []),
-                "mc": record.get("module_count"),
-                "fnc": record.get("function_count"),
-                "ev": record.get("event_count_in_trace_a"),
-                "ln": record.get("line_event_count_in_trace_a"),
-                "cal": record.get("call_event_count_in_trace_a"),
-                "dep": record.get("max_call_depth"),
-                "first": record.get("first_seen_line_number"),
+        for file_path, symbol_id in file_symbols.items():
+            meta = file_meta.get(file_path, {})
+            lines.append("SYM " + _compact_json_text(drop_empty_fields({
+                "id": symbol_id,
+                "k": "file",
+                "p": file_path,
+                "rp": meta.get("rp"),
+                "bn": meta.get("bn"),
+            })))
+
+        for class_name, symbol_id in class_symbols.items():
+            lines.append("SYM " + _compact_json_text({
+                "id": symbol_id,
+                "k": "class",
+                "v": class_name,
             }))
 
-        for record in payload.get("unique_functions", []):
-            lines.append("FUN " + _compact_json_text({
+        for scope_name, symbol_id in scope_symbols.items():
+            lines.append("SYM " + _compact_json_text({
+                "id": symbol_id,
+                "k": "scope",
+                "v": scope_name,
+            }))
+
+        for record in function_records:
+            lines.append("FUN " + _compact_json_text(drop_empty_fields({
                 "n": record.get("name"),
                 "q": record.get("qualified_name"),
-                "mod": record.get("module_name"),
-                "p": record.get("path"),
-                "rp": record.get("relative_path"),
-                "bn": record.get("file_name"),
+                "mid": module_symbols.get(record.get("module_name")),
+                "fid": file_symbols.get(record.get("path")),
+                "cid": class_symbols.get(record.get("class_name")),
+                "sid": scope_symbols.get(record.get("parent_scope")),
                 "def": record.get("defined_line_number"),
                 "end": record.get("end_line_number"),
                 "type": record.get("definition_type"),
-                "cls": record.get("class_name"),
-                "parent": record.get("parent_scope"),
                 "async": compact_bool(record.get("is_async")),
                 "src": compact_bool(record.get("definition_found_in_source")),
                 "first": record.get("first_seen_line_number"),
@@ -1066,7 +1093,7 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
                 "exc": record.get("exception_count_in_trace_a"),
                 "dep": record.get("max_call_depth"),
                 "smp": compact_samples(record.get("sample_executed_lines", [])),
-            }))
+            })))
 
         return "\n".join(lines)
 
@@ -1174,33 +1201,6 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
         qualified_name = definition.get("qualified_name") or func_name
         return (file_path, module_name or "", qualified_name, defined_line if defined_line is not None else 0)
 
-    def ensure_module_record(container, module_name):
-        return container.setdefault(module_name, {
-            "module_name": module_name,
-            "is_top_level_script": module_name == "(unknown-module)",
-            "file_paths": set(),
-            "function_names": set(),
-            "event_count_in_trace_a": 0,
-            "line_event_count_in_trace_a": 0,
-            "call_event_count_in_trace_a": 0,
-            "max_call_depth": 0,
-            "first_seen_line_number": None,
-        })
-
-    def ensure_file_record(container, file_path):
-        return container.setdefault(file_path, {
-            "path": file_path,
-            "relative_path": get_relative_path(file_path),
-            "file_name": os.path.basename(file_path) if file_path else "",
-            "module_names": set(),
-            "function_names": set(),
-            "event_count_in_trace_a": 0,
-            "line_event_count_in_trace_a": 0,
-            "call_event_count_in_trace_a": 0,
-            "max_call_depth": 0,
-            "first_seen_line_number": None,
-        })
-
     def ensure_function_record(container, function_key, base_info):
         return container.setdefault(function_key, {
             "name": base_info.get("name"),
@@ -1277,11 +1277,7 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
 
     def build_trace_summary(trace_obj):
         stack_list = normalize_trace_stack(trace_obj)
-        state = {
-            "modules": {},
-            "files": {},
-            "functions": {},
-        }
+        state = {"functions": {}}
 
         def traverse(events, active_function_key=None):
             for event in events:
@@ -1292,36 +1288,6 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
                 line_no = safe_int(details.get("line_no"))
                 depth = safe_int(details.get("depth")) or 0
                 event_type = event.get("type", "")
-
-                if module_name:
-                    module_record = ensure_module_record(state["modules"], module_name)
-                    module_record["event_count_in_trace_a"] += 1
-                    module_record["max_call_depth"] = max(module_record["max_call_depth"], depth)
-                    if file_path:
-                        module_record["file_paths"].add(file_path)
-                    if func_name and func_name != "<module>":
-                        module_record["function_names"].add(func_name)
-                    if line_no is not None and module_record["first_seen_line_number"] is None:
-                        module_record["first_seen_line_number"] = line_no
-                    if event_type == "LINE":
-                        module_record["line_event_count_in_trace_a"] += 1
-                    elif event_type == "CALL":
-                        module_record["call_event_count_in_trace_a"] += 1
-
-                if file_path:
-                    file_record = ensure_file_record(state["files"], file_path)
-                    file_record["event_count_in_trace_a"] += 1
-                    file_record["max_call_depth"] = max(file_record["max_call_depth"], depth)
-                    if module_name:
-                        file_record["module_names"].add(module_name)
-                    if func_name and func_name != "<module>":
-                        file_record["function_names"].add(func_name)
-                    if line_no is not None and file_record["first_seen_line_number"] is None:
-                        file_record["first_seen_line_number"] = line_no
-                    if event_type == "LINE":
-                        file_record["line_event_count_in_trace_a"] += 1
-                    elif event_type == "CALL":
-                        file_record["call_event_count_in_trace_a"] += 1
 
                 current_function_key = active_function_key
                 if func_name and func_name != "<module>" and file_path:
@@ -1365,19 +1331,6 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
 
         traverse(stack_list)
 
-        for record in state["modules"].values():
-            record["file_paths"] = sorted(record["file_paths"])
-            record["file_names"] = sorted(os.path.basename(path) for path in record["file_paths"])
-            record["function_names"] = sorted(record["function_names"])
-            record["file_count"] = len(record["file_paths"])
-            record["function_count"] = len(record["function_names"])
-
-        for record in state["files"].values():
-            record["module_names"] = sorted(record["module_names"])
-            record["function_names"] = sorted(record["function_names"])
-            record["module_count"] = len(record["module_names"])
-            record["function_count"] = len(record["function_names"])
-
         for record in state["functions"].values():
             record["observed_line_numbers"] = sorted(record["observed_line_numbers"])
             record["sample_executed_lines"] = sorted(
@@ -1390,43 +1343,18 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
     trace_a_summary = build_trace_summary(exec_stack_1)
     trace_b_summary = build_trace_summary(exec_stack_0)
 
-    unique_module_names = sorted(set(trace_a_summary["modules"]) - set(trace_b_summary["modules"]))
-    unique_file_paths = sorted(set(trace_a_summary["files"]) - set(trace_b_summary["files"]))
     unique_function_keys = sorted(
         set(trace_a_summary["functions"]) - set(trace_b_summary["functions"]),
         key=lambda item: (item[0], item[3], item[2]),
     )
-    unique_file_path_set = set(unique_file_paths)
-
-    unique_module_records = []
-    for module_name in unique_module_names:
-        module_record = dict(trace_a_summary["modules"][module_name])
-        module_file_paths = module_record.get("file_paths", [])
-        filtered_file_paths = [
-            file_path for file_path in module_file_paths
-            if file_path in unique_file_path_set
-        ]
-        module_record["file_paths"] = filtered_file_paths
-        module_record["file_names"] = [
-            os.path.basename(file_path) for file_path in filtered_file_paths
-        ]
-        module_record["file_count"] = len(filtered_file_paths)
-        unique_module_records.append(module_record)
 
     result_payload = {
         "comparison": {
             "trace_a_role": "feature_positive",
             "trace_b_role": "feature_negative",
             "comparison_type": "trace_a_minus_trace_b",
-            "unique_module_count": len(unique_module_names),
-            "unique_file_count": len(unique_file_paths),
             "unique_function_count": len(unique_function_keys),
         },
-        "unique_modules": unique_module_records,
-        "unique_files": [
-            trace_a_summary["files"][file_path]
-            for file_path in unique_file_paths
-        ],
         "unique_functions": [
             trace_a_summary["functions"][function_key]
             for function_key in unique_function_keys
@@ -1447,8 +1375,6 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
 
     print(
         "\n\nSuccess! "
-        f"modules={len(result_payload['unique_modules'])}, "
-        f"files={len(result_payload['unique_files'])}, "
         f"functions={len(result_payload['unique_functions'])}\n\n"
         f"Unique trace summary extracted to {output_file}\n"
         + (
@@ -1471,13 +1397,13 @@ def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folde
     - generate_llm_txt: 默认为 False。为 True 时，额外生成 edge-list 文本版本
 
     裁剪规则：
-    1. 先根据 unique_artifacts 中出现的 module/file/function，在 dep_tree["paths"] 中找相关 path。
+    1. 先根据 unique_artifacts 中出现的 unique functions，在 dep_tree["paths"] 中找相关 path。
     2. 只保留命中的 path。
     3. 再根据被保留 path 中实际用到的 files/symbols/edges，反向精简 dep_tree 其余内容。
 
     输出文件：
-    - {output_path}/unique_artifacts_dep_tree.json
-    - {output_path}/unique_artifacts_dep_tree_edgelist.txt（仅当 generate_llm_txt=True）
+    - {output_path}/unique_dep_tree.json
+    - {output_path}/unique_dep_tree_edgelist.txt（仅当 generate_llm_txt=True）
     """
 
     def load_json_like(value, name):
@@ -1548,21 +1474,12 @@ def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folde
     symbol_records = _dep_tree_symbol_records(dep_tree_json)
     dep_tree_paths = dep_tree_json.get("paths", {})
 
-    target_file_paths = set()
-    for record in artifacts_json.get("unique_modules", []):
-        target_file_paths.update(record.get("file_paths", []))
-    for record in artifacts_json.get("unique_files", []):
-        if record.get("path"):
-            target_file_paths.add(record["path"])
-
     function_matchers = build_function_matchers(artifacts_json)
 
     def symbol_matches_target(symbol_id):
         record = symbol_records.get(symbol_id)
         if not record:
             return False
-        if record.get("file_path") in target_file_paths:
-            return True
         return any(symbol_matches_function(record, matcher) for matcher in function_matchers)
 
     retained_paths = {}
@@ -1612,8 +1529,6 @@ def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folde
     filtered_dep_tree["edges"] = retained_edges
     filtered_dep_tree["paths"] = retained_paths
     filtered_dep_tree["filter_summary"] = {
-        "source_unique_module_count": len(artifacts_json.get("unique_modules", [])),
-        "source_unique_file_count": len(artifacts_json.get("unique_files", [])),
         "source_unique_function_count": len(artifacts_json.get("unique_functions", [])),
         "matched_path_count": sum(len(paths) for paths in retained_paths.values()),
         "matched_sink_count": len(retained_paths),

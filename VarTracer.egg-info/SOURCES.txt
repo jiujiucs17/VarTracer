@@ -19,4 +19,5 @@ VarTracer/test_code/test_extension_interface.py
 VarTracer/test_code/test_historical_bugs.py
 VarTracer/test_code/test_known_limitations.py
 VarTracer/test_code/test_line_dependency_analyzer.py
+VarTracer/test_code/test_unique_artifacts_output.py
 VarTracer/test_code/test_vartracer_flow.py

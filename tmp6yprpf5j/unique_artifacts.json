@@ -1,0 +1,42 @@
+{
+    "comparison": {
+        "trace_a_role": "feature_positive",
+        "trace_b_role": "feature_negative",
+        "comparison_type": "trace_a_minus_trace_b",
+        "unique_function_count": 1
+    },
+    "unique_functions": [
+        {
+            "name": "create_event",
+            "qualified_name": "create_event",
+            "module_name": "VarTracer.Utilities",
+            "path": "/Users/zhangmengqi/Documents/PhD/Working Documents/DaLIC_paper/VarTracer/VarTracer/Utilities.py",
+            "relative_path": "VarTracer/Utilities.py",
+            "file_name": "Utilities.py",
+            "defined_line_number": 27,
+            "end_line_number": 32,
+            "definition_type": "function",
+            "class_name": null,
+            "parent_scope": null,
+            "is_async": false,
+            "definition_found_in_source": true,
+            "first_seen_line_number": 23,
+            "observed_line_numbers": [
+                23,
+                25
+            ],
+            "event_count_in_trace_a": 2,
+            "call_count_in_trace_a": 1,
+            "line_event_count_in_trace_a": 1,
+            "return_count_in_trace_a": 0,
+            "exception_count_in_trace_a": 0,
+            "max_call_depth": 1,
+            "sample_executed_lines": [
+                {
+                    "line_number": 25,
+                    "line_content": "event = {'type': event_type, 'details': base_info}"
+                }
+            ]
+        }
+    ]
+}

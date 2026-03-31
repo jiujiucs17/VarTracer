@@ -1,0 +1,6 @@
+# Read as: CMP comparison; SYM shared symbol; FUN unique function.
+# Key map: a=trace_a_role,b=trace_b_role,rel=comparison_type,ufn=unique function count,id=symbol id,k=symbol kind,v=symbol value,p=path,rp=relative_path,bn=file_name,n=name,q=qualified_name,mid=module_symbol_id,fid=file_symbol_id,cid=class_symbol_id,sid=parent_scope_symbol_id,def=defined_line_number,end=end_line_number,type=definition_type,async=is_async,src=definition_found_in_source,first=first_seen_line_number,obs=observed_line_numbers,ev=event_count,cal/call=line-call counts,ret=return_count,exc=exception_count,dep=max_call_depth,smp=sample_executed_lines
+CMP {"a":"feature_positive","b":"feature_negative","rel":"trace_a_minus_trace_b","ufn":1}
+SYM {"id":"m1","k":"mod","v":"VarTracer.Utilities"}
+SYM {"id":"f1","k":"file","p":"/Users/zhangmengqi/Documents/PhD/Working Documents/DaLIC_paper/VarTracer/VarTracer/Utilities.py","rp":"VarTracer/Utilities.py","bn":"Utilities.py"}
+FUN {"n":"create_event","q":"create_event","mid":"m1","fid":"f1","def":27,"end":32,"type":"function","async":0,"src":1,"first":23,"obs":[23,25],"ev":2,"call":1,"line":1,"ret":0,"exc":0,"dep":1,"smp":["25:event = {'type': event_type, 'details': base_info}"]}
