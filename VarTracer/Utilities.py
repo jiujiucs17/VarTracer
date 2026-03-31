@@ -70,67 +70,267 @@ def _compact_json_text(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _dep_tree_to_edgelist_text(dep_tree):
+def _drop_empty_fields(mapping):
+    return {
+        key: value
+        for key, value in mapping.items()
+        if value not in (None, "", [], {})
+    }
+
+
+def _module_matches_target_package(module_name, target_package):
+    if not target_package:
+        return True
+    if not module_name or module_name == "(unknown-module)":
+        return False
+    top_level_package = target_package.split(".")[0]
+    return (
+        module_name == top_level_package
+        or module_name.startswith(top_level_package + ".")
+    )
+
+
+def _path_matches_target_package(file_path, target_package):
+    if not target_package:
+        return True
+    if not file_path:
+        return False
+    top_level_package = target_package.split(".")[0]
+    normalized_path = file_path.replace("\\", "/")
+    return (
+        f"/{top_level_package}/" in f"/{normalized_path}/"
+        or normalized_path.endswith(f"/{top_level_package}.py")
+    )
+
+
+def _dep_tree_to_edgelist_text(dep_tree, target_package=None):
     symbols = dep_tree.get("symbols", {})
     files = dep_tree.get("files", {})
-    lines = [
-        "# Read as: META metadata; FIL file; SYM symbol; EDG edge; PTH path.",
-        (
-            "# Key map: "
-            "v=version,ts=trace_started_at,"
-            "id=record id,p=path,bn=file basename,"
-            "k=kind,n=name,s=scope,f=file_id,l=line,"
-            "src=source_symbol_id,dst=target_symbol_id,h=hits,"
-            "sink=sink_symbol_id,seq=ordered symbol ids in one dependency path"
-        ),
-        "META " + _compact_json_text({
-            "v": dep_tree.get("version"),
-            "ts": dep_tree.get("trace_started_at"),
-            "file_count": len(files),
-            "symbol_count": len(symbols),
-            "edge_count": len(dep_tree.get("edges", [])),
-            "sink_count": len(dep_tree.get("paths", {})),
-        }),
-    ]
 
+    def deduplicate_path_records(path_records):
+        deduplicated = []
+        seen = set()
+        for record in path_records:
+            key = (
+                record.get("sink"),
+                tuple(record.get("seq", [])),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            deduplicated.append(record)
+        return deduplicated
+
+    if not target_package:
+        lines = [
+            "# Read as: META metadata; FIL file; SYM symbol; EDG edge; PTH path.",
+            (
+                "# Key map: "
+                "v=version,ts=trace_started_at,"
+                "id=record id,p=path,bn=file basename,"
+                "k=kind,n=name,s=scope,f=file_id,l=line,"
+                "src=source_symbol_id,dst=target_symbol_id,h=hits,"
+                "sink=sink_symbol_id,seq=ordered symbol ids in one dependency path"
+            ),
+            "META " + _compact_json_text({
+                "v": dep_tree.get("version"),
+                "ts": dep_tree.get("trace_started_at"),
+                "file_count": len(files),
+                "symbol_count": len(symbols),
+                "edge_count": len(dep_tree.get("edges", [])),
+                "sink_count": len(dep_tree.get("paths", {})),
+            }),
+        ]
+
+        for file_id, path in files.items():
+            lines.append("FIL " + _compact_json_text({
+                "id": file_id,
+                "p": path,
+                "bn": os.path.basename(path) if path else "",
+            }))
+
+        for symbol_id, symbol_meta in symbols.items():
+            if len(symbol_meta) < 5:
+                continue
+            kind, name, scope, file_id, line_no = symbol_meta
+            lines.append("SYM " + _compact_json_text({
+                "id": symbol_id,
+                "k": kind,
+                "n": name,
+                "s": scope,
+                "f": file_id,
+                "l": line_no,
+            }))
+
+        for edge in dep_tree.get("edges", []):
+            if len(edge) < 5:
+                continue
+            src, dst, kind, line_no, hits = edge
+            lines.append("EDG " + _compact_json_text({
+                "src": src,
+                "dst": dst,
+                "k": kind,
+                "l": line_no,
+                "h": hits,
+            }))
+
+        for sink_id, sink_paths in dep_tree.get("paths", {}).items():
+            for path in sink_paths:
+                lines.append("PTH " + _compact_json_text({
+                    "sink": sink_id,
+                    "seq": path,
+                }))
+
+        return "\n".join(lines)
+
+    outside_file_id = "f_out"
+    outside_symbol_id = "s_out"
+    outside_edge_id = "e_out"
+    outside_marker = "__outside_target_package__"
+    symbol_records = _dep_tree_symbol_records(dep_tree)
+    inside_file_ids = {
+        file_id
+        for file_id, path in files.items()
+        if _path_matches_target_package(path, target_package)
+    }
+    inside_symbol_ids = {
+        symbol_id
+        for symbol_id, record in symbol_records.items()
+        if record.get("file_id") in inside_file_ids
+    }
+    has_outside_symbols = any(symbol_id not in inside_symbol_ids for symbol_id in symbols)
+
+    compressed_files = []
     for file_id, path in files.items():
-        lines.append("FIL " + _compact_json_text({
-            "id": file_id,
-            "p": path,
-            "bn": os.path.basename(path) if path else "",
-        }))
+        if file_id in inside_file_ids:
+            compressed_files.append({
+                "id": file_id,
+                "p": path,
+                "bn": os.path.basename(path) if path else "",
+            })
+    if has_outside_symbols:
+        compressed_files.append({
+            "id": outside_file_id,
+            "p": outside_marker,
+            "bn": outside_marker,
+        })
 
+    compressed_symbols = []
     for symbol_id, symbol_meta in symbols.items():
         if len(symbol_meta) < 5:
             continue
         kind, name, scope, file_id, line_no = symbol_meta
-        lines.append("SYM " + _compact_json_text({
-            "id": symbol_id,
-            "k": kind,
-            "n": name,
-            "s": scope,
-            "f": file_id,
-            "l": line_no,
-        }))
+        if symbol_id in inside_symbol_ids:
+            compressed_symbols.append({
+                "id": symbol_id,
+                "k": kind,
+                "n": name,
+                "s": scope,
+                "f": file_id,
+                "l": line_no,
+            })
+    if has_outside_symbols:
+        compressed_symbols.append({
+            "id": outside_symbol_id,
+            "f": outside_file_id,
+        })
+
+    symbol_id_map = {
+        symbol_id: (symbol_id if symbol_id in inside_symbol_ids else outside_symbol_id)
+        for symbol_id in symbols
+    }
+    compressed_edges = []
+    compressed_edge_ids = {}
+    pair_to_edge_id = {}
+
+    def register_compressed_edge(edge_key, base_record, fixed_id=None):
+        if edge_key in compressed_edge_ids:
+            return compressed_edge_ids[edge_key]
+        edge_id = fixed_id or f"e{len(compressed_edges) + 1}"
+        compressed_edge_ids[edge_key] = edge_id
+        record = dict(base_record)
+        record["id"] = edge_id
+        compressed_edges.append(record)
+        return edge_id
 
     for edge in dep_tree.get("edges", []):
         if len(edge) < 5:
             continue
         src, dst, kind, line_no, hits = edge
-        lines.append("EDG " + _compact_json_text({
-            "src": src,
-            "dst": dst,
-            "k": kind,
-            "l": line_no,
-            "h": hits,
-        }))
+        mapped_src = symbol_id_map.get(src, outside_symbol_id)
+        mapped_dst = symbol_id_map.get(dst, outside_symbol_id)
+        if mapped_src == outside_symbol_id and mapped_dst == outside_symbol_id:
+            edge_id = register_compressed_edge(
+                ("outside", "outside"),
+                {
+                    "src": outside_symbol_id,
+                    "dst": outside_symbol_id,
+                },
+                fixed_id=outside_edge_id,
+            )
+        else:
+            edge_id = register_compressed_edge(
+                (mapped_src, mapped_dst, kind, line_no, hits),
+                _drop_empty_fields({
+                    "src": mapped_src,
+                    "dst": mapped_dst,
+                    "k": kind,
+                    "l": line_no,
+                    "h": hits,
+                }),
+            )
+        pair_to_edge_id.setdefault((src, dst), edge_id)
 
+    compressed_paths = []
     for sink_id, sink_paths in dep_tree.get("paths", {}).items():
+        mapped_sink = symbol_id_map.get(sink_id, outside_symbol_id)
         for path in sink_paths:
-            lines.append("PTH " + _compact_json_text({
-                "sink": sink_id,
-                "seq": path,
-            }))
+            edge_seq = []
+            for index in range(len(path) - 1):
+                edge_id = pair_to_edge_id.get((path[index], path[index + 1]))
+                if edge_id is None:
+                    continue
+                if edge_id == outside_edge_id and edge_seq and edge_seq[-1] == outside_edge_id:
+                    continue
+                edge_seq.append(edge_id)
+            compressed_paths.append({
+                "sink": mapped_sink,
+                "seq": edge_seq,
+            })
+    compressed_paths = deduplicate_path_records(compressed_paths)
+
+    lines = [
+        "# Read as: META metadata; FIL file; SYM symbol; EDG edge; PTH path.",
+        (
+            "# Key map: "
+            "v=version,ts=trace_started_at,tp=target_package,"
+            "id=record id,p=path,bn=file basename,"
+            "k=kind,n=name,s=scope,f=file_id,l=line,"
+            "src=source_symbol_id,dst=target_symbol_id,h=hits,"
+            "sink=sink_symbol_id,seq=ordered edge ids in one dependency path"
+        ),
+        "META " + _compact_json_text({
+            "v": dep_tree.get("version"),
+            "ts": dep_tree.get("trace_started_at"),
+            "tp": target_package,
+            "file_count": len(compressed_files),
+            "symbol_count": len(compressed_symbols),
+            "edge_count": len(compressed_edges),
+            "sink_count": len(compressed_paths),
+        }),
+    ]
+
+    for record in compressed_files:
+        lines.append("FIL " + _compact_json_text(record))
+
+    for record in compressed_symbols:
+        lines.append("SYM " + _compact_json_text(record))
+
+    for record in compressed_edges:
+        lines.append("EDG " + _compact_json_text(record))
+
+    for record in compressed_paths:
+        lines.append("PTH " + _compact_json_text(record))
 
     return "\n".join(lines)
 
@@ -918,15 +1118,25 @@ label_meanings = {
     "back to function granularity": "Hyperlink to the Function Granularity sheet, which shows all Function Events. While highlighting the current context.",
 }
 
-def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate_llm_txt=False):
+def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate_llm_txt=False, target_package=None):
     """
     对比两个 execution trace，输出 trace A 相对于 trace B 的 unique functions。
+
+    用法补充：
+    - 默认输出完整的 unique_functions JSON，以及基于该 JSON 生成的 LLM 文本。
+    - 当 target_package 传入包名（如 "pandas"）时，JSON 内容保持不变，
+      但 unique_artifacts.txt 会进一步压缩，只保留 module 属于该包的 FUN 记录，
+      并同步删除这些 FUN 之外不再被引用的 SYM 记录。
+    - 常见第三方库的 target_package 建议值：
+      scikit-learn -> "sklearn"，pandas -> "pandas"，numpy -> "numpy"，
+      matplotlib -> "matplotlib"，sympy -> "sympy"。
 
     参数约定：
     - exec_stack_1: execution trace A（feature positive）
     - exec_stack_0: execution trace B（feature negative）
     - output_path: 输出目录
     - generate_llm_txt: 默认为 False。为 True 时，额外生成一个压缩后的 LLM 文本文件
+    - target_package: 默认为 None。若传入包名，则仅在 txt 输出阶段保留属于该包的函数及其共享符号
 
     兼容以下输入形式：
     - {"execution_stack": [...]}
@@ -979,16 +1189,14 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
             packed.append(f"{line_no}:{line_content}")
         return packed
 
-    def drop_empty_fields(mapping):
-        return {
-            key: value
-            for key, value in mapping.items()
-            if value not in (None, "", [], {})
-        }
-
     def build_llm_text(payload):
         comparison = payload.get("comparison", {})
-        function_records = payload.get("unique_functions", [])
+        source_function_records = payload.get("unique_functions", [])
+        function_records = [
+            record
+            for record in source_function_records
+            if _module_matches_target_package(record.get("module_name"), target_package)
+        ] if target_package else list(source_function_records)
 
         module_symbols = {}
         file_symbols = {}
@@ -1036,7 +1244,7 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
                 "a": comparison.get("trace_a_role"),
                 "b": comparison.get("trace_b_role"),
                 "rel": comparison.get("comparison_type"),
-                "ufn": comparison.get("unique_function_count"),
+                "ufn": len(function_records),
             }),
         ]
 
@@ -1049,7 +1257,7 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
 
         for file_path, symbol_id in file_symbols.items():
             meta = file_meta.get(file_path, {})
-            lines.append("SYM " + _compact_json_text(drop_empty_fields({
+            lines.append("SYM " + _compact_json_text(_drop_empty_fields({
                 "id": symbol_id,
                 "k": "file",
                 "p": file_path,
@@ -1072,7 +1280,7 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
             }))
 
         for record in function_records:
-            lines.append("FUN " + _compact_json_text(drop_empty_fields({
+            lines.append("FUN " + _compact_json_text(_drop_empty_fields({
                 "n": record.get("name"),
                 "q": record.get("qualified_name"),
                 "mid": module_symbols.get(record.get("module_name")),
@@ -1386,15 +1594,27 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
     return result_payload
 
 
-def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folder, generate_llm_txt=False):
+def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folder, generate_llm_txt=False, target_package=None):
     """
     根据 extract_unique_functions() 生成的 unique_artifacts.json，对 feature-positive 的 dep_tree 做裁剪。
+
+    用法补充：
+    - 默认行为是输出完整裁剪后的 dep_tree JSON，以及逐节点展开的 edge-list txt。
+    - 当 target_package 传入包名（如 "pandas"）时，JSON 内容保持不变，
+      但 unique_dep_tree_edgelist.txt 会进一步压缩：
+      包外文件折叠为一个特殊 FIL，包外符号折叠为一个特殊 SYM，
+      src 和 dst 都在包外的边折叠为一个特殊 EDG，
+      并把 PTH.seq 从 symbol id 序列改成 edge id 序列，连续包外边只保留一个特殊 EDG。
+    - 常见第三方库的 target_package 建议值：
+      scikit-learn -> "sklearn"，pandas -> "pandas"，numpy -> "numpy"，
+      matplotlib -> "matplotlib"，sympy -> "sympy"。
 
     参数：
     - unique_artifacts: unique_artifacts.json 的路径，或其已加载的 dict
     - dep_tree: feature-positive 对应 dep_tree json 的路径，或其已加载的 dict
     - output_folder: 输出目录
     - generate_llm_txt: 默认为 False。为 True 时，额外生成 edge-list 文本版本
+    - target_package: 默认为 None。若传入包名，则仅在 txt 输出阶段对包外节点做折叠压缩
 
     裁剪规则：
     1. 先根据 unique_artifacts 中出现的 unique functions，在 dep_tree["paths"] 中找相关 path。
@@ -1482,6 +1702,17 @@ def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folde
             return False
         return any(symbol_matches_function(record, matcher) for matcher in function_matchers)
 
+    def deduplicate_symbol_paths(paths):
+        deduplicated = []
+        seen = set()
+        for path in paths:
+            key = tuple(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduplicated.append(path)
+        return deduplicated
+
     retained_paths = {}
     retained_symbol_ids = set()
     retained_edge_pairs = set()
@@ -1494,6 +1725,7 @@ def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folde
                 retained_symbol_ids.update(path)
                 for index in range(len(path) - 1):
                     retained_edge_pairs.add((path[index], path[index + 1]))
+        matched_paths = deduplicate_symbol_paths(matched_paths)
         if matched_paths:
             retained_paths[sink_id] = matched_paths
 
@@ -1546,7 +1778,7 @@ def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folde
     if generate_llm_txt:
         edgelist_output_file = os.path.join(output_dir, "unique_dep_tree_edgelist.txt")
         with open(edgelist_output_file, "w", encoding="utf-8") as handle:
-            handle.write(_dep_tree_to_edgelist_text(filtered_dep_tree))
+            handle.write(_dep_tree_to_edgelist_text(filtered_dep_tree, target_package=target_package))
 
     print(
         "\n\nSuccess! "
