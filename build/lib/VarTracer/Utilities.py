@@ -70,67 +70,393 @@ def _compact_json_text(value):
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
-def _dep_tree_to_edgelist_text(dep_tree):
-    symbols = dep_tree.get("symbols", {})
-    files = dep_tree.get("files", {})
-    lines = [
-        "# Read as: META metadata; FIL file; SYM symbol; EDG edge; PTH path.",
-        (
-            "# Key map: "
-            "v=version,ts=trace_started_at,"
-            "id=record id,p=path,bn=file basename,"
-            "k=kind,n=name,s=scope,f=file_id,l=line,"
-            "src=source_symbol_id,dst=target_symbol_id,h=hits,"
-            "sink=sink_symbol_id,seq=ordered symbol ids in one dependency path"
-        ),
-        "META " + _compact_json_text({
-            "v": dep_tree.get("version"),
-            "ts": dep_tree.get("trace_started_at"),
-            "file_count": len(files),
-            "symbol_count": len(symbols),
-            "edge_count": len(dep_tree.get("edges", [])),
-            "sink_count": len(dep_tree.get("paths", {})),
-        }),
-    ]
+def _drop_empty_fields(mapping):
+    return {
+        key: value
+        for key, value in mapping.items()
+        if value not in (None, "", [], {})
+    }
 
-    for file_id, path in files.items():
-        lines.append("FIL " + _compact_json_text({
-            "id": file_id,
-            "p": path,
-            "bn": os.path.basename(path) if path else "",
-        }))
 
-    for symbol_id, symbol_meta in symbols.items():
-        if len(symbol_meta) < 5:
+def _module_matches_target_package(module_name, target_package):
+    if not target_package:
+        return True
+    if not module_name or module_name == "(unknown-module)":
+        return False
+    top_level_package = target_package.split(".")[0]
+    return (
+        module_name == top_level_package
+        or module_name.startswith(top_level_package + ".")
+    )
+
+
+def _path_matches_target_package(file_path, target_package):
+    if not target_package:
+        return True
+    if not file_path:
+        return False
+    top_level_package = target_package.split(".")[0]
+    normalized_path = file_path.replace("\\", "/")
+    return (
+        f"/{top_level_package}/" in f"/{normalized_path}/"
+        or normalized_path.endswith(f"/{top_level_package}.py")
+    )
+
+
+def _package_relative_path(file_path, target_package=None, module_name=None, file_name=None):
+    normalized_path = (file_path or "").replace("\\", "/")
+    target_top_level = target_package.split(".")[0] if target_package else None
+
+    if normalized_path:
+        if target_top_level:
+            marker = f"/{target_top_level}/"
+            if marker in normalized_path:
+                suffix = normalized_path.split(marker, 1)[1]
+                return f"{target_top_level}/{suffix}"
+            if normalized_path.endswith(f"/{target_top_level}.py"):
+                return f"{target_top_level}.py"
+        if "/site-packages/" in normalized_path:
+            return normalized_path.split("/site-packages/", 1)[1]
+        if not os.path.isabs(normalized_path):
+            return normalized_path
+
+    if module_name:
+        module_path = module_name.replace(".", "/")
+        if target_top_level and _module_matches_target_package(module_name, target_package):
+            if file_name == "__init__.py":
+                return f"{module_path}/__init__.py"
+            return f"{module_path}.py"
+        if file_name == "__init__.py":
+            return f"{module_path}/__init__.py"
+        if file_name and file_name.endswith(".py"):
+            module_tail = module_path.rsplit("/", 1)[-1]
+            if module_tail == file_name[:-3]:
+                return f"{module_path}.py"
+            parent_path = module_path.rsplit("/", 1)[0] if "/" in module_path else ""
+            return f"{parent_path}/{file_name}" if parent_path else file_name
+        return f"{module_path}.py"
+
+    if normalized_path:
+        return os.path.basename(normalized_path) or normalized_path
+    return file_name or "(unknown file)"
+
+
+def _shorten_markdown_text(text, max_length=120):
+    if text is None:
+        return ""
+    normalized = str(text).replace("\n", " ").strip()
+    if len(normalized) <= max_length:
+        return normalized
+    return normalized[: max_length - 3].rstrip() + "..."
+
+
+def _format_line_span(start_line, end_line=None):
+    if start_line is None:
+        return None
+    if end_line is not None and end_line != start_line:
+        return f"lines {start_line}-{end_line}"
+    return f"line {start_line}"
+
+
+def _format_line_list(lines, limit=8):
+    clean_lines = []
+    for line in lines or []:
+        try:
+            clean_lines.append(int(line))
+        except (TypeError, ValueError):
             continue
-        kind, name, scope, file_id, line_no = symbol_meta
-        lines.append("SYM " + _compact_json_text({
-            "id": symbol_id,
-            "k": kind,
-            "n": name,
-            "s": scope,
-            "f": file_id,
-            "l": line_no,
-        }))
+    clean_lines = sorted(dict.fromkeys(clean_lines))
+    if not clean_lines:
+        return None
+    if len(clean_lines) > limit:
+        shown = ", ".join(str(line) for line in clean_lines[:limit])
+        return f"{shown}, ..."
+    return ", ".join(str(line) for line in clean_lines)
 
+
+def _artifact_display_label(record, target_package=None):
+    relative_path = _package_relative_path(
+        record.get("path"),
+        target_package=target_package,
+        module_name=record.get("module_name"),
+        file_name=record.get("file_name"),
+    )
+    qualified_name = record.get("qualified_name") or record.get("name") or "(unknown function)"
+    return f"{relative_path}:{qualified_name}"
+
+
+def _record_matches_target_package(record, target_package):
+    if not target_package:
+        return True
+    if _module_matches_target_package(record.get("module_name"), target_package):
+        return True
+    return _path_matches_target_package(record.get("path"), target_package)
+
+
+def _dep_tree_to_edgelist_text(dep_tree, target_package=None, anchor_records=None):
+    from collections import Counter
+
+    symbol_records = _dep_tree_symbol_records(dep_tree)
+    edge_records = {}
     for edge in dep_tree.get("edges", []):
         if len(edge) < 5:
             continue
         src, dst, kind, line_no, hits = edge
-        lines.append("EDG " + _compact_json_text({
-            "src": src,
-            "dst": dst,
-            "k": kind,
-            "l": line_no,
-            "h": hits,
-        }))
+        edge_records[(src, dst)] = {
+            "kind": kind,
+            "line": line_no,
+            "hits": hits,
+        }
 
-    for sink_id, sink_paths in dep_tree.get("paths", {}).items():
-        for path in sink_paths:
-            lines.append("PTH " + _compact_json_text({
-                "sink": sink_id,
-                "seq": path,
-            }))
+    def symbol_owner_label(record):
+        if not record:
+            return None
+        file_path = record.get("file_path")
+        if target_package and not _path_matches_target_package(file_path, target_package):
+            return "[outside target package]"
+
+        relative_path = _package_relative_path(
+            file_path,
+            target_package=target_package,
+            file_name=os.path.basename(file_path) if file_path else None,
+        )
+        scope = str(record.get("scope") or "").strip()
+        name = str(record.get("name") or "").strip()
+        kind = str(record.get("kind") or "").strip()
+
+        if kind == "func" and name:
+            qualified = f"{scope}.{name}" if scope and scope not in {"<module>", name} else name
+            return f"{relative_path}:{qualified}"
+        if kind == "class" and name:
+            return f"{relative_path}:{name}"
+        if scope and scope not in {"<module>", ""}:
+            return f"{relative_path}:{scope}"
+        return relative_path
+
+    def compact_symbol_path(symbol_path):
+        labels = []
+        has_outside_gap = False
+        for symbol_id in symbol_path:
+            label = symbol_owner_label(symbol_records.get(symbol_id))
+            if not label:
+                continue
+            if label == "[outside target package]":
+                has_outside_gap = True
+            if not labels or labels[-1] != label:
+                labels.append(label)
+
+        while labels and labels[0] == "[outside target package]":
+            labels = labels[1:]
+        while labels and labels[-1] == "[outside target package]":
+            labels = labels[:-1]
+        return labels, has_outside_gap
+
+    def path_signature(labels, has_outside_gap):
+        return tuple(labels), has_outside_gap
+
+    def path_score(labels, has_outside_gap, symbol_path):
+        internal_nodes = sum(1 for label in labels if label != "[outside target package]")
+        total_hits = 0
+        for index in range(len(symbol_path) - 1):
+            edge_meta = edge_records.get((symbol_path[index], symbol_path[index + 1]), {})
+            total_hits += int(edge_meta.get("hits") or 0)
+        return (-internal_nodes, len(labels), 1 if has_outside_gap else 0, -total_hits, " -> ".join(labels))
+
+    related_file_counts = Counter()
+    compact_paths = []
+    seen_compact_paths = set()
+
+    for sink_paths in dep_tree.get("paths", {}).values():
+        for symbol_path in sink_paths:
+            labels, has_outside_gap = compact_symbol_path(symbol_path)
+            if not labels:
+                continue
+            signature = path_signature(labels, has_outside_gap)
+            if signature in seen_compact_paths:
+                continue
+            seen_compact_paths.add(signature)
+            compact_paths.append({
+                "labels": labels,
+                "has_outside_gap": has_outside_gap,
+                "symbol_path": symbol_path,
+            })
+            for label in labels:
+                if label == "[outside target package]":
+                    continue
+                related_file_counts[label.split(":", 1)[0]] += 1
+
+    compact_paths.sort(key=lambda item: path_score(item["labels"], item["has_outside_gap"], item["symbol_path"]))
+
+    def safe_int_local(value):
+        try:
+            if value in (None, ""):
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def normalize_scope(value):
+        return "" if value is None else str(value)
+
+    function_matchers = []
+    for record in anchor_records or []:
+        if not _record_matches_target_package(record, target_package):
+            continue
+        function_matchers.append({
+            "path": record.get("path"),
+            "name": record.get("name"),
+            "defined_line_number": safe_int_local(record.get("defined_line_number")),
+            "parent_scope": normalize_scope(record.get("parent_scope")),
+            "class_name": normalize_scope(record.get("class_name")),
+            "record": record,
+        })
+
+    def symbol_matches_function(record, matcher):
+        if not record:
+            return False
+        if matcher.get("path") and record.get("file_path") != matcher.get("path"):
+            return False
+
+        symbol_kind = record.get("kind")
+        symbol_name = record.get("name")
+        symbol_scope = normalize_scope(record.get("scope"))
+        symbol_line = safe_int_local(record.get("line"))
+        target_name = matcher.get("name")
+        target_line = matcher.get("defined_line_number")
+        parent_scope = matcher.get("parent_scope")
+        class_scope = matcher.get("class_name")
+
+        if symbol_scope == target_name:
+            return True
+
+        if symbol_kind == "func" and symbol_name == target_name:
+            if target_line is not None and symbol_line is not None and symbol_line != target_line:
+                return False
+            valid_parent_scopes = {parent_scope, class_scope}
+            valid_parent_scopes.discard("")
+            if not valid_parent_scopes:
+                return symbol_scope in {"", "<module>"}
+            return symbol_scope in valid_parent_scopes
+
+        return False
+
+    lines = [
+        "# Unique Dependency Hints",
+        "",
+        "Use these dependency hints as supplemental evidence, not as final answers.",
+        "",
+        "## Summary",
+        f"- Trace started at: `{dep_tree.get('trace_started_at') or 'unknown'}`",
+        f"- Retained files: `{len(dep_tree.get('files', {}))}`",
+        f"- Retained symbols: `{len(dep_tree.get('symbols', {}))}`",
+        f"- Retained edges: `{len(dep_tree.get('edges', []))}`",
+        f"- Matched dependency paths: `{sum(len(paths) for paths in dep_tree.get('paths', {}).values())}`",
+    ]
+
+    if target_package:
+        lines.append(f"- Named locations are limited to the target package: `{target_package}`")
+        lines.append("- External dependencies are summarized generically and are not listed by file or function name.")
+
+    top_files = related_file_counts.most_common(10)
+    if top_files:
+        lines.extend([
+            "",
+            "## Related File Clusters",
+        ])
+        for file_path, count in top_files:
+            lines.append(f"- `{file_path}`: appears in `{count}` retained dependency path(s)")
+
+    if not compact_paths:
+        lines.extend([
+            "",
+            "## Key Dependency Paths",
+            "- No retained dependency paths were available after filtering.",
+        ])
+        return "\n".join(lines)
+
+    lines.extend([
+        "",
+        "## Key Dependency Paths",
+    ])
+    for item in compact_paths[:12]:
+        rendered_path = " -> ".join(item["labels"])
+        if item["has_outside_gap"]:
+            rendered_path += " -> [outside target package omitted]"
+        lines.append(f"- path: `{rendered_path}`")
+
+    remaining = len(compact_paths) - min(len(compact_paths), 12)
+    if remaining > 0:
+        lines.append(f"- Additional condensed paths omitted: `{remaining}`")
+
+    if function_matchers:
+        lines.extend([
+            "",
+            "## Anchor Artifacts",
+        ])
+
+        for matcher in function_matchers[:8]:
+            anchor_label = _artifact_display_label(matcher["record"], target_package=target_package)
+            anchor_symbol_ids = {
+                symbol_id
+                for symbol_id, record in symbol_records.items()
+                if symbol_matches_function(record, matcher)
+            }
+            if not anchor_symbol_ids:
+                continue
+
+            anchor_compact_paths = []
+            seen_anchor_paths = set()
+            related_files = Counter()
+            for sink_paths in dep_tree.get("paths", {}).values():
+                for symbol_path in sink_paths:
+                    if not any(symbol_id in anchor_symbol_ids for symbol_id in symbol_path):
+                        continue
+                    labels, has_outside_gap = compact_symbol_path(symbol_path)
+                    if not labels:
+                        continue
+                    signature = path_signature(labels, has_outside_gap)
+                    if signature in seen_anchor_paths:
+                        continue
+                    seen_anchor_paths.add(signature)
+                    anchor_compact_paths.append({
+                        "labels": labels,
+                        "has_outside_gap": has_outside_gap,
+                        "symbol_path": symbol_path,
+                    })
+                    for label in labels:
+                        if label == "[outside target package]":
+                            continue
+                        related_files[label.split(":", 1)[0]] += 1
+
+            anchor_compact_paths.sort(
+                key=lambda item: path_score(item["labels"], item["has_outside_gap"], item["symbol_path"])
+            )
+
+            lines.append(f"- anchor: `{anchor_label}`")
+            if matcher["record"].get("module_name"):
+                lines.append(f"  - module: `{matcher['record'].get('module_name')}`")
+
+            definition_span = _format_line_span(
+                matcher["record"].get("defined_line_number"),
+                matcher["record"].get("end_line_number"),
+            )
+            if definition_span:
+                lines.append(f"  - definition: `{definition_span}`")
+
+            if related_files:
+                lines.append("  - related files:")
+                for file_path, count in related_files.most_common(5):
+                    lines.append(f"    - `{file_path}`: `{count}` retained path(s)")
+
+            if anchor_compact_paths:
+                lines.append("  - key dependency paths:")
+                for item in anchor_compact_paths[:3]:
+                    rendered_path = " -> ".join(item["labels"])
+                    if item["has_outside_gap"]:
+                        rendered_path += " -> [outside target package omitted]"
+                    lines.append(f"    - `{rendered_path}`")
+            else:
+                lines.append("  - key dependency paths: none retained after compression")
 
     return "\n".join(lines)
 
@@ -918,15 +1244,25 @@ label_meanings = {
     "back to function granularity": "Hyperlink to the Function Granularity sheet, which shows all Function Events. While highlighting the current context.",
 }
 
-def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate_llm_txt=False):
+def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate_llm_txt=False, target_package=None):
     """
     对比两个 execution trace，输出 trace A 相对于 trace B 的 unique functions。
+
+    用法补充：
+    - 默认输出完整的 unique_functions JSON，以及基于该 JSON 生成的 LLM 文本。
+    - 当 target_package 传入包名（如 "pandas"）时，JSON 内容保持不变，
+      但 unique_artifacts.txt 会进一步压缩，只保留 module 属于该包的 FUN 记录，
+      并同步删除这些 FUN 之外不再被引用的 SYM 记录。
+    - 常见第三方库的 target_package 建议值：
+      scikit-learn -> "sklearn"，pandas -> "pandas"，numpy -> "numpy"，
+      matplotlib -> "matplotlib"，sympy -> "sympy"。
 
     参数约定：
     - exec_stack_1: execution trace A（feature positive）
     - exec_stack_0: execution trace B（feature negative）
     - output_path: 输出目录
     - generate_llm_txt: 默认为 False。为 True 时，额外生成一个压缩后的 LLM 文本文件
+    - target_package: 默认为 None。若传入包名，则仅在 txt 输出阶段保留属于该包的函数及其共享符号
 
     兼容以下输入形式：
     - {"execution_stack": [...]}
@@ -981,54 +1317,119 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
 
     def build_llm_text(payload):
         comparison = payload.get("comparison", {})
-        lines = [
-            "# Read as: CMP comparison; FUN unique function.",
-            (
-                "# Key map: "
-                "a=trace_a_role,b=trace_b_role,rel=comparison_type,"
-                "ufn=unique function count,"
-                "n=name,module_name,q=qualified_name,"
-                "p=path,rp=relative_path,bn=file_name,"
-                "def=defined_line_number,end=end_line_number,"
-                "type=definition_type,cls=class_name,parent=parent_scope,"
-                "async=is_async,src=definition_found_in_source,"
-                "first=first_seen_line_number,obs=observed_line_numbers,"
-                "ev=event_count,cal/call=line-call counts,ret=return_count,exc=exception_count,"
-                "dep=max_call_depth,smp=sample_executed_lines"
+        source_function_records = payload.get("unique_functions", [])
+        function_records = [
+            record
+            for record in source_function_records
+            if _record_matches_target_package(record, target_package)
+        ] if target_package else list(source_function_records)
+
+        function_records = sorted(
+            function_records,
+            key=lambda record: (
+                -(record.get("event_count_in_trace_a") or 0),
+                _artifact_display_label(record, target_package=target_package),
             ),
-            "CMP " + _compact_json_text({
-                "a": comparison.get("trace_a_role"),
-                "b": comparison.get("trace_b_role"),
-                "rel": comparison.get("comparison_type"),
-                "ufn": comparison.get("unique_function_count"),
-            }),
+        )
+
+        lines = [
+            "# Unique Artifacts",
+            "",
+            "Use these unique artifacts as supplemental hints, not as final answers.",
+            "",
+            "## Summary",
+            f"- Trace A role: `{comparison.get('trace_a_role') or 'unknown'}`",
+            f"- Trace B role: `{comparison.get('trace_b_role') or 'unknown'}`",
+            f"- Comparison: `{comparison.get('comparison_type') or 'unknown'}`",
+            f"- Unique functions in JSON: `{len(source_function_records)}`",
+            f"- Unique functions shown here: `{len(function_records)}`",
         ]
 
-        for record in payload.get("unique_functions", []):
-            lines.append("FUN " + _compact_json_text({
-                "n": record.get("name"),
-                "q": record.get("qualified_name"),
-                "mod": record.get("module_name"),
-                "p": record.get("path"),
-                "rp": record.get("relative_path"),
-                "bn": record.get("file_name"),
-                "def": record.get("defined_line_number"),
-                "end": record.get("end_line_number"),
-                "type": record.get("definition_type"),
-                "cls": record.get("class_name"),
-                "parent": record.get("parent_scope"),
-                "async": compact_bool(record.get("is_async")),
-                "src": compact_bool(record.get("definition_found_in_source")),
-                "first": record.get("first_seen_line_number"),
-                "obs": record.get("observed_line_numbers", []),
-                "ev": record.get("event_count_in_trace_a"),
-                "call": record.get("call_count_in_trace_a"),
-                "line": record.get("line_event_count_in_trace_a"),
-                "ret": record.get("return_count_in_trace_a"),
-                "exc": record.get("exception_count_in_trace_a"),
-                "dep": record.get("max_call_depth"),
-                "smp": compact_samples(record.get("sample_executed_lines", [])),
-            }))
+        if target_package:
+            lines.append(f"- Target package filter: `{target_package}`")
+
+        if not function_records:
+            lines.extend([
+                "",
+                "## Artifact Candidates",
+                "- No unique functions matched the current target-package filter.",
+            ])
+            return "\n".join(lines)
+
+        file_counts = {}
+        for record in function_records:
+            relative_path = _package_relative_path(
+                record.get("path"),
+                target_package=target_package,
+                module_name=record.get("module_name"),
+                file_name=record.get("file_name"),
+            )
+            file_counts[relative_path] = file_counts.get(relative_path, 0) + 1
+
+        lines.extend([
+            "",
+            "## Related Files",
+        ])
+        for file_path, count in sorted(file_counts.items(), key=lambda item: (-item[1], item[0]))[:12]:
+            lines.append(f"- `{file_path}`: `{count}` unique function(s)")
+
+        lines.extend([
+            "",
+            "## Artifact Candidates",
+        ])
+
+        displayed_records = function_records[:20]
+        for record in displayed_records:
+            relative_path = _package_relative_path(
+                record.get("path"),
+                target_package=target_package,
+                module_name=record.get("module_name"),
+                file_name=record.get("file_name"),
+            )
+            qualified_name = record.get("qualified_name") or record.get("name") or "(unknown function)"
+            lines.append(f"- artifact: `{relative_path}:{qualified_name}`")
+            if record.get("module_name"):
+                lines.append(f"  - module: `{record.get('module_name')}`")
+
+            definition_span = _format_line_span(
+                record.get("defined_line_number"),
+                record.get("end_line_number"),
+            )
+            if definition_span:
+                lines.append(f"  - definition: `{definition_span}`")
+
+            first_seen_line = record.get("first_seen_line_number")
+            if first_seen_line is not None:
+                lines.append(f"  - first observed in trace A: `line {first_seen_line}`")
+
+            observed_lines = _format_line_list(record.get("observed_line_numbers"), limit=8)
+            if observed_lines:
+                lines.append(f"  - observed lines: `{observed_lines}`")
+
+            activity_summary = (
+                f"{record.get('event_count_in_trace_a') or 0} events, "
+                f"{record.get('call_count_in_trace_a') or 0} calls, "
+                f"{record.get('line_event_count_in_trace_a') or 0} line events, "
+                f"{record.get('return_count_in_trace_a') or 0} returns, "
+                f"{record.get('exception_count_in_trace_a') or 0} exceptions, "
+                f"max depth {record.get('max_call_depth') or 0}"
+            )
+            lines.append(f"  - trace activity: {activity_summary}")
+
+            sample_lines = record.get("sample_executed_lines", [])[:3]
+            if sample_lines:
+                lines.append("  - sample executed lines:")
+                for sample in sample_lines:
+                    sample_line_no = sample.get("line_number")
+                    sample_content = _shorten_markdown_text(sample.get("line_content"), max_length=100)
+                    if sample_line_no is None:
+                        lines.append(f"    - `{sample_content}`")
+                    else:
+                        lines.append(f"    - `line {sample_line_no}`: `{sample_content}`")
+
+        omitted_count = len(function_records) - len(displayed_records)
+        if omitted_count > 0:
+            lines.append(f"- Additional artifact candidates omitted: `{omitted_count}`")
 
         return "\n".join(lines)
 
@@ -1321,15 +1722,27 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
     return result_payload
 
 
-def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folder, generate_llm_txt=False):
+def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folder, generate_llm_txt=False, target_package=None):
     """
     根据 extract_unique_functions() 生成的 unique_artifacts.json，对 feature-positive 的 dep_tree 做裁剪。
+
+    用法补充：
+    - 默认行为是输出完整裁剪后的 dep_tree JSON，以及逐节点展开的 edge-list txt。
+    - 当 target_package 传入包名（如 "pandas"）时，JSON 内容保持不变，
+      但 unique_dep_tree_edgelist.txt 会进一步压缩：
+      包外文件折叠为一个特殊 FIL，包外符号折叠为一个特殊 SYM，
+      src 和 dst 都在包外的边折叠为一个特殊 EDG，
+      并把 PTH.seq 从 symbol id 序列改成 edge id 序列，连续包外边只保留一个特殊 EDG。
+    - 常见第三方库的 target_package 建议值：
+      scikit-learn -> "sklearn"，pandas -> "pandas"，numpy -> "numpy"，
+      matplotlib -> "matplotlib"，sympy -> "sympy"。
 
     参数：
     - unique_artifacts: unique_artifacts.json 的路径，或其已加载的 dict
     - dep_tree: feature-positive 对应 dep_tree json 的路径，或其已加载的 dict
     - output_folder: 输出目录
     - generate_llm_txt: 默认为 False。为 True 时，额外生成 edge-list 文本版本
+    - target_package: 默认为 None。若传入包名，则仅在 txt 输出阶段对包外节点做折叠压缩
 
     裁剪规则：
     1. 先根据 unique_artifacts 中出现的 unique functions，在 dep_tree["paths"] 中找相关 path。
@@ -1417,6 +1830,17 @@ def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folde
             return False
         return any(symbol_matches_function(record, matcher) for matcher in function_matchers)
 
+    def deduplicate_symbol_paths(paths):
+        deduplicated = []
+        seen = set()
+        for path in paths:
+            key = tuple(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduplicated.append(path)
+        return deduplicated
+
     retained_paths = {}
     retained_symbol_ids = set()
     retained_edge_pairs = set()
@@ -1429,6 +1853,7 @@ def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folde
                 retained_symbol_ids.update(path)
                 for index in range(len(path) - 1):
                     retained_edge_pairs.add((path[index], path[index + 1]))
+        matched_paths = deduplicate_symbol_paths(matched_paths)
         if matched_paths:
             retained_paths[sink_id] = matched_paths
 
@@ -1481,7 +1906,13 @@ def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folde
     if generate_llm_txt:
         edgelist_output_file = os.path.join(output_dir, "unique_dep_tree_edgelist.txt")
         with open(edgelist_output_file, "w", encoding="utf-8") as handle:
-            handle.write(_dep_tree_to_edgelist_text(filtered_dep_tree))
+            handle.write(
+                _dep_tree_to_edgelist_text(
+                    filtered_dep_tree,
+                    target_package=target_package,
+                    anchor_records=artifacts_json.get("unique_functions", []),
+                )
+            )
 
     print(
         "\n\nSuccess! "

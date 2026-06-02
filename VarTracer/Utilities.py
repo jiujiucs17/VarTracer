@@ -103,234 +103,360 @@ def _path_matches_target_package(file_path, target_package):
     )
 
 
-def _dep_tree_to_edgelist_text(dep_tree, target_package=None):
-    symbols = dep_tree.get("symbols", {})
-    files = dep_tree.get("files", {})
+def _package_relative_path(file_path, target_package=None, module_name=None, file_name=None):
+    normalized_path = (file_path or "").replace("\\", "/")
+    target_top_level = target_package.split(".")[0] if target_package else None
 
-    def deduplicate_path_records(path_records):
-        deduplicated = []
-        seen = set()
-        for record in path_records:
-            key = (
-                record.get("sink"),
-                tuple(record.get("seq", [])),
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            deduplicated.append(record)
-        return deduplicated
+    if normalized_path:
+        if target_top_level:
+            marker = f"/{target_top_level}/"
+            if marker in normalized_path:
+                suffix = normalized_path.split(marker, 1)[1]
+                return f"{target_top_level}/{suffix}"
+            if normalized_path.endswith(f"/{target_top_level}.py"):
+                return f"{target_top_level}.py"
+        if "/site-packages/" in normalized_path:
+            return normalized_path.split("/site-packages/", 1)[1]
+        if not os.path.isabs(normalized_path):
+            return normalized_path
 
-    if not target_package:
-        lines = [
-            "# Read as: META metadata; FIL file; SYM symbol; EDG edge; PTH path.",
-            (
-                "# Key map: "
-                "v=version,ts=trace_started_at,"
-                "id=record id,p=path,bn=file basename,"
-                "k=kind,n=name,s=scope,f=file_id,l=line,"
-                "src=source_symbol_id,dst=target_symbol_id,h=hits,"
-                "sink=sink_symbol_id,seq=ordered symbol ids in one dependency path"
-            ),
-            "META " + _compact_json_text({
-                "v": dep_tree.get("version"),
-                "ts": dep_tree.get("trace_started_at"),
-                "file_count": len(files),
-                "symbol_count": len(symbols),
-                "edge_count": len(dep_tree.get("edges", [])),
-                "sink_count": len(dep_tree.get("paths", {})),
-            }),
-        ]
+    if module_name:
+        module_path = module_name.replace(".", "/")
+        if target_top_level and _module_matches_target_package(module_name, target_package):
+            if file_name == "__init__.py":
+                return f"{module_path}/__init__.py"
+            return f"{module_path}.py"
+        if file_name == "__init__.py":
+            return f"{module_path}/__init__.py"
+        if file_name and file_name.endswith(".py"):
+            module_tail = module_path.rsplit("/", 1)[-1]
+            if module_tail == file_name[:-3]:
+                return f"{module_path}.py"
+            parent_path = module_path.rsplit("/", 1)[0] if "/" in module_path else ""
+            return f"{parent_path}/{file_name}" if parent_path else file_name
+        return f"{module_path}.py"
 
-        for file_id, path in files.items():
-            lines.append("FIL " + _compact_json_text({
-                "id": file_id,
-                "p": path,
-                "bn": os.path.basename(path) if path else "",
-            }))
+    if normalized_path:
+        return os.path.basename(normalized_path) or normalized_path
+    return file_name or "(unknown file)"
 
-        for symbol_id, symbol_meta in symbols.items():
-            if len(symbol_meta) < 5:
-                continue
-            kind, name, scope, file_id, line_no = symbol_meta
-            lines.append("SYM " + _compact_json_text({
-                "id": symbol_id,
-                "k": kind,
-                "n": name,
-                "s": scope,
-                "f": file_id,
-                "l": line_no,
-            }))
 
-        for edge in dep_tree.get("edges", []):
-            if len(edge) < 5:
-                continue
-            src, dst, kind, line_no, hits = edge
-            lines.append("EDG " + _compact_json_text({
-                "src": src,
-                "dst": dst,
-                "k": kind,
-                "l": line_no,
-                "h": hits,
-            }))
+def _shorten_markdown_text(text, max_length=120):
+    if text is None:
+        return ""
+    normalized = str(text).replace("\n", " ").strip()
+    if len(normalized) <= max_length:
+        return normalized
+    return normalized[: max_length - 3].rstrip() + "..."
 
-        for sink_id, sink_paths in dep_tree.get("paths", {}).items():
-            for path in sink_paths:
-                lines.append("PTH " + _compact_json_text({
-                    "sink": sink_id,
-                    "seq": path,
-                }))
 
-        return "\n".join(lines)
+def _format_line_span(start_line, end_line=None):
+    if start_line is None:
+        return None
+    if end_line is not None and end_line != start_line:
+        return f"lines {start_line}-{end_line}"
+    return f"line {start_line}"
 
-    outside_file_id = "f_out"
-    outside_symbol_id = "s_out"
-    outside_edge_id = "e_out"
-    outside_marker = "__outside_target_package__"
-    symbol_records = _dep_tree_symbol_records(dep_tree)
-    inside_file_ids = {
-        file_id
-        for file_id, path in files.items()
-        if _path_matches_target_package(path, target_package)
-    }
-    inside_symbol_ids = {
-        symbol_id
-        for symbol_id, record in symbol_records.items()
-        if record.get("file_id") in inside_file_ids
-    }
-    has_outside_symbols = any(symbol_id not in inside_symbol_ids for symbol_id in symbols)
 
-    compressed_files = []
-    for file_id, path in files.items():
-        if file_id in inside_file_ids:
-            compressed_files.append({
-                "id": file_id,
-                "p": path,
-                "bn": os.path.basename(path) if path else "",
-            })
-    if has_outside_symbols:
-        compressed_files.append({
-            "id": outside_file_id,
-            "p": outside_marker,
-            "bn": outside_marker,
-        })
-
-    compressed_symbols = []
-    for symbol_id, symbol_meta in symbols.items():
-        if len(symbol_meta) < 5:
+def _format_line_list(lines, limit=8):
+    clean_lines = []
+    for line in lines or []:
+        try:
+            clean_lines.append(int(line))
+        except (TypeError, ValueError):
             continue
-        kind, name, scope, file_id, line_no = symbol_meta
-        if symbol_id in inside_symbol_ids:
-            compressed_symbols.append({
-                "id": symbol_id,
-                "k": kind,
-                "n": name,
-                "s": scope,
-                "f": file_id,
-                "l": line_no,
-            })
-    if has_outside_symbols:
-        compressed_symbols.append({
-            "id": outside_symbol_id,
-            "f": outside_file_id,
-        })
+    clean_lines = sorted(dict.fromkeys(clean_lines))
+    if not clean_lines:
+        return None
+    if len(clean_lines) > limit:
+        shown = ", ".join(str(line) for line in clean_lines[:limit])
+        return f"{shown}, ..."
+    return ", ".join(str(line) for line in clean_lines)
 
-    symbol_id_map = {
-        symbol_id: (symbol_id if symbol_id in inside_symbol_ids else outside_symbol_id)
-        for symbol_id in symbols
-    }
-    compressed_edges = []
-    compressed_edge_ids = {}
-    pair_to_edge_id = {}
 
-    def register_compressed_edge(edge_key, base_record, fixed_id=None):
-        if edge_key in compressed_edge_ids:
-            return compressed_edge_ids[edge_key]
-        edge_id = fixed_id or f"e{len(compressed_edges) + 1}"
-        compressed_edge_ids[edge_key] = edge_id
-        record = dict(base_record)
-        record["id"] = edge_id
-        compressed_edges.append(record)
-        return edge_id
+def _artifact_display_label(record, target_package=None):
+    relative_path = _package_relative_path(
+        record.get("path"),
+        target_package=target_package,
+        module_name=record.get("module_name"),
+        file_name=record.get("file_name"),
+    )
+    qualified_name = record.get("qualified_name") or record.get("name") or "(unknown function)"
+    return f"{relative_path}:{qualified_name}"
 
+
+def _record_matches_target_package(record, target_package):
+    if not target_package:
+        return True
+    if _module_matches_target_package(record.get("module_name"), target_package):
+        return True
+    return _path_matches_target_package(record.get("path"), target_package)
+
+
+def _dep_tree_to_edgelist_text(dep_tree, target_package=None, anchor_records=None):
+    from collections import Counter
+
+    symbol_records = _dep_tree_symbol_records(dep_tree)
+    edge_records = {}
     for edge in dep_tree.get("edges", []):
         if len(edge) < 5:
             continue
         src, dst, kind, line_no, hits = edge
-        mapped_src = symbol_id_map.get(src, outside_symbol_id)
-        mapped_dst = symbol_id_map.get(dst, outside_symbol_id)
-        if mapped_src == outside_symbol_id and mapped_dst == outside_symbol_id:
-            edge_id = register_compressed_edge(
-                ("outside", "outside"),
-                {
-                    "src": outside_symbol_id,
-                    "dst": outside_symbol_id,
-                },
-                fixed_id=outside_edge_id,
-            )
-        else:
-            edge_id = register_compressed_edge(
-                (mapped_src, mapped_dst, kind, line_no, hits),
-                _drop_empty_fields({
-                    "src": mapped_src,
-                    "dst": mapped_dst,
-                    "k": kind,
-                    "l": line_no,
-                    "h": hits,
-                }),
-            )
-        pair_to_edge_id.setdefault((src, dst), edge_id)
+        edge_records[(src, dst)] = {
+            "kind": kind,
+            "line": line_no,
+            "hits": hits,
+        }
 
-    compressed_paths = []
-    for sink_id, sink_paths in dep_tree.get("paths", {}).items():
-        mapped_sink = symbol_id_map.get(sink_id, outside_symbol_id)
-        for path in sink_paths:
-            edge_seq = []
-            for index in range(len(path) - 1):
-                edge_id = pair_to_edge_id.get((path[index], path[index + 1]))
-                if edge_id is None:
-                    continue
-                if edge_id == outside_edge_id and edge_seq and edge_seq[-1] == outside_edge_id:
-                    continue
-                edge_seq.append(edge_id)
-            compressed_paths.append({
-                "sink": mapped_sink,
-                "seq": edge_seq,
+    def symbol_owner_label(record):
+        if not record:
+            return None
+        file_path = record.get("file_path")
+        if target_package and not _path_matches_target_package(file_path, target_package):
+            return "[outside target package]"
+
+        relative_path = _package_relative_path(
+            file_path,
+            target_package=target_package,
+            file_name=os.path.basename(file_path) if file_path else None,
+        )
+        scope = str(record.get("scope") or "").strip()
+        name = str(record.get("name") or "").strip()
+        kind = str(record.get("kind") or "").strip()
+
+        if kind == "func" and name:
+            qualified = f"{scope}.{name}" if scope and scope not in {"<module>", name} else name
+            return f"{relative_path}:{qualified}"
+        if kind == "class" and name:
+            return f"{relative_path}:{name}"
+        if scope and scope not in {"<module>", ""}:
+            return f"{relative_path}:{scope}"
+        return relative_path
+
+    def compact_symbol_path(symbol_path):
+        labels = []
+        has_outside_gap = False
+        for symbol_id in symbol_path:
+            label = symbol_owner_label(symbol_records.get(symbol_id))
+            if not label:
+                continue
+            if label == "[outside target package]":
+                has_outside_gap = True
+            if not labels or labels[-1] != label:
+                labels.append(label)
+
+        while labels and labels[0] == "[outside target package]":
+            labels = labels[1:]
+        while labels and labels[-1] == "[outside target package]":
+            labels = labels[:-1]
+        return labels, has_outside_gap
+
+    def path_signature(labels, has_outside_gap):
+        return tuple(labels), has_outside_gap
+
+    def path_score(labels, has_outside_gap, symbol_path):
+        internal_nodes = sum(1 for label in labels if label != "[outside target package]")
+        total_hits = 0
+        for index in range(len(symbol_path) - 1):
+            edge_meta = edge_records.get((symbol_path[index], symbol_path[index + 1]), {})
+            total_hits += int(edge_meta.get("hits") or 0)
+        return (-internal_nodes, len(labels), 1 if has_outside_gap else 0, -total_hits, " -> ".join(labels))
+
+    related_file_counts = Counter()
+    compact_paths = []
+    seen_compact_paths = set()
+
+    for sink_paths in dep_tree.get("paths", {}).values():
+        for symbol_path in sink_paths:
+            labels, has_outside_gap = compact_symbol_path(symbol_path)
+            if not labels:
+                continue
+            signature = path_signature(labels, has_outside_gap)
+            if signature in seen_compact_paths:
+                continue
+            seen_compact_paths.add(signature)
+            compact_paths.append({
+                "labels": labels,
+                "has_outside_gap": has_outside_gap,
+                "symbol_path": symbol_path,
             })
-    compressed_paths = deduplicate_path_records(compressed_paths)
+            for label in labels:
+                if label == "[outside target package]":
+                    continue
+                related_file_counts[label.split(":", 1)[0]] += 1
+
+    compact_paths.sort(key=lambda item: path_score(item["labels"], item["has_outside_gap"], item["symbol_path"]))
+
+    def safe_int_local(value):
+        try:
+            if value in (None, ""):
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def normalize_scope(value):
+        return "" if value is None else str(value)
+
+    function_matchers = []
+    for record in anchor_records or []:
+        if not _record_matches_target_package(record, target_package):
+            continue
+        function_matchers.append({
+            "path": record.get("path"),
+            "name": record.get("name"),
+            "defined_line_number": safe_int_local(record.get("defined_line_number")),
+            "parent_scope": normalize_scope(record.get("parent_scope")),
+            "class_name": normalize_scope(record.get("class_name")),
+            "record": record,
+        })
+
+    def symbol_matches_function(record, matcher):
+        if not record:
+            return False
+        if matcher.get("path") and record.get("file_path") != matcher.get("path"):
+            return False
+
+        symbol_kind = record.get("kind")
+        symbol_name = record.get("name")
+        symbol_scope = normalize_scope(record.get("scope"))
+        symbol_line = safe_int_local(record.get("line"))
+        target_name = matcher.get("name")
+        target_line = matcher.get("defined_line_number")
+        parent_scope = matcher.get("parent_scope")
+        class_scope = matcher.get("class_name")
+
+        if symbol_scope == target_name:
+            return True
+
+        if symbol_kind == "func" and symbol_name == target_name:
+            if target_line is not None and symbol_line is not None and symbol_line != target_line:
+                return False
+            valid_parent_scopes = {parent_scope, class_scope}
+            valid_parent_scopes.discard("")
+            if not valid_parent_scopes:
+                return symbol_scope in {"", "<module>"}
+            return symbol_scope in valid_parent_scopes
+
+        return False
 
     lines = [
-        "# Read as: META metadata; FIL file; SYM symbol; EDG edge; PTH path.",
-        (
-            "# Key map: "
-            "v=version,ts=trace_started_at,tp=target_package,"
-            "id=record id,p=path,bn=file basename,"
-            "k=kind,n=name,s=scope,f=file_id,l=line,"
-            "src=source_symbol_id,dst=target_symbol_id,h=hits,"
-            "sink=sink_symbol_id,seq=ordered edge ids in one dependency path"
-        ),
-        "META " + _compact_json_text({
-            "v": dep_tree.get("version"),
-            "ts": dep_tree.get("trace_started_at"),
-            "tp": target_package,
-            "file_count": len(compressed_files),
-            "symbol_count": len(compressed_symbols),
-            "edge_count": len(compressed_edges),
-            "sink_count": len(compressed_paths),
-        }),
+        "# Unique Dependency Hints",
+        "",
+        "Use these dependency hints as supplemental evidence, not as final answers.",
+        "",
+        "## Summary",
+        f"- Trace started at: `{dep_tree.get('trace_started_at') or 'unknown'}`",
+        f"- Retained files: `{len(dep_tree.get('files', {}))}`",
+        f"- Retained symbols: `{len(dep_tree.get('symbols', {}))}`",
+        f"- Retained edges: `{len(dep_tree.get('edges', []))}`",
+        f"- Matched dependency paths: `{sum(len(paths) for paths in dep_tree.get('paths', {}).values())}`",
     ]
 
-    for record in compressed_files:
-        lines.append("FIL " + _compact_json_text(record))
+    if target_package:
+        lines.append(f"- Named locations are limited to the target package: `{target_package}`")
+        lines.append("- External dependencies are summarized generically and are not listed by file or function name.")
 
-    for record in compressed_symbols:
-        lines.append("SYM " + _compact_json_text(record))
+    top_files = related_file_counts.most_common(10)
+    if top_files:
+        lines.extend([
+            "",
+            "## Related File Clusters",
+        ])
+        for file_path, count in top_files:
+            lines.append(f"- `{file_path}`: appears in `{count}` retained dependency path(s)")
 
-    for record in compressed_edges:
-        lines.append("EDG " + _compact_json_text(record))
+    if not compact_paths:
+        lines.extend([
+            "",
+            "## Key Dependency Paths",
+            "- No retained dependency paths were available after filtering.",
+        ])
+        return "\n".join(lines)
 
-    for record in compressed_paths:
-        lines.append("PTH " + _compact_json_text(record))
+    lines.extend([
+        "",
+        "## Key Dependency Paths",
+    ])
+    for item in compact_paths[:12]:
+        rendered_path = " -> ".join(item["labels"])
+        if item["has_outside_gap"]:
+            rendered_path += " -> [outside target package omitted]"
+        lines.append(f"- path: `{rendered_path}`")
+
+    remaining = len(compact_paths) - min(len(compact_paths), 12)
+    if remaining > 0:
+        lines.append(f"- Additional condensed paths omitted: `{remaining}`")
+
+    if function_matchers:
+        lines.extend([
+            "",
+            "## Anchor Artifacts",
+        ])
+
+        for matcher in function_matchers[:8]:
+            anchor_label = _artifact_display_label(matcher["record"], target_package=target_package)
+            anchor_symbol_ids = {
+                symbol_id
+                for symbol_id, record in symbol_records.items()
+                if symbol_matches_function(record, matcher)
+            }
+            if not anchor_symbol_ids:
+                continue
+
+            anchor_compact_paths = []
+            seen_anchor_paths = set()
+            related_files = Counter()
+            for sink_paths in dep_tree.get("paths", {}).values():
+                for symbol_path in sink_paths:
+                    if not any(symbol_id in anchor_symbol_ids for symbol_id in symbol_path):
+                        continue
+                    labels, has_outside_gap = compact_symbol_path(symbol_path)
+                    if not labels:
+                        continue
+                    signature = path_signature(labels, has_outside_gap)
+                    if signature in seen_anchor_paths:
+                        continue
+                    seen_anchor_paths.add(signature)
+                    anchor_compact_paths.append({
+                        "labels": labels,
+                        "has_outside_gap": has_outside_gap,
+                        "symbol_path": symbol_path,
+                    })
+                    for label in labels:
+                        if label == "[outside target package]":
+                            continue
+                        related_files[label.split(":", 1)[0]] += 1
+
+            anchor_compact_paths.sort(
+                key=lambda item: path_score(item["labels"], item["has_outside_gap"], item["symbol_path"])
+            )
+
+            lines.append(f"- anchor: `{anchor_label}`")
+            if matcher["record"].get("module_name"):
+                lines.append(f"  - module: `{matcher['record'].get('module_name')}`")
+
+            definition_span = _format_line_span(
+                matcher["record"].get("defined_line_number"),
+                matcher["record"].get("end_line_number"),
+            )
+            if definition_span:
+                lines.append(f"  - definition: `{definition_span}`")
+
+            if related_files:
+                lines.append("  - related files:")
+                for file_path, count in related_files.most_common(5):
+                    lines.append(f"    - `{file_path}`: `{count}` retained path(s)")
+
+            if anchor_compact_paths:
+                lines.append("  - key dependency paths:")
+                for item in anchor_compact_paths[:3]:
+                    rendered_path = " -> ".join(item["labels"])
+                    if item["has_outside_gap"]:
+                        rendered_path += " -> [outside target package omitted]"
+                    lines.append(f"    - `{rendered_path}`")
+            else:
+                lines.append("  - key dependency paths: none retained after compression")
 
     return "\n".join(lines)
 
@@ -1195,113 +1321,115 @@ def extract_unique_functions(exec_stack_1, exec_stack_0, output_folder, generate
         function_records = [
             record
             for record in source_function_records
-            if _module_matches_target_package(record.get("module_name"), target_package)
+            if _record_matches_target_package(record, target_package)
         ] if target_package else list(source_function_records)
 
-        module_symbols = {}
-        file_symbols = {}
-        class_symbols = {}
-        scope_symbols = {}
-        file_meta = {}
-
-        def assign_symbol_id(container, value, prefix):
-            if not value:
-                return None
-            if value not in container:
-                container[value] = f"{prefix}{len(container) + 1}"
-            return container[value]
-
-        for record in function_records:
-            assign_symbol_id(module_symbols, record.get("module_name"), "m")
-            file_path = record.get("path")
-            file_id = assign_symbol_id(file_symbols, file_path, "f")
-            if file_path and file_id and file_path not in file_meta:
-                file_meta[file_path] = {
-                    "rp": record.get("relative_path"),
-                    "bn": record.get("file_name"),
-                }
-            assign_symbol_id(class_symbols, record.get("class_name"), "c")
-            assign_symbol_id(scope_symbols, record.get("parent_scope"), "s")
+        function_records = sorted(
+            function_records,
+            key=lambda record: (
+                -(record.get("event_count_in_trace_a") or 0),
+                _artifact_display_label(record, target_package=target_package),
+            ),
+        )
 
         lines = [
-            "# Read as: CMP comparison; SYM shared symbol; FUN unique function.",
-            (
-                "# Key map: "
-                "a=trace_a_role,b=trace_b_role,rel=comparison_type,"
-                "ufn=unique function count,"
-                "id=symbol id,k=symbol kind,v=symbol value,"
-                "p=path,rp=relative_path,bn=file_name,"
-                "n=name,q=qualified_name,mid=module_symbol_id,fid=file_symbol_id,"
-                "cid=class_symbol_id,sid=parent_scope_symbol_id,"
-                "def=defined_line_number,end=end_line_number,"
-                "type=definition_type,"
-                "async=is_async,src=definition_found_in_source,"
-                "first=first_seen_line_number,obs=observed_line_numbers,"
-                "ev=event_count,cal/call=line-call counts,ret=return_count,exc=exception_count,"
-                "dep=max_call_depth,smp=sample_executed_lines"
-            ),
-            "CMP " + _compact_json_text({
-                "a": comparison.get("trace_a_role"),
-                "b": comparison.get("trace_b_role"),
-                "rel": comparison.get("comparison_type"),
-                "ufn": len(function_records),
-            }),
+            "# Unique Artifacts",
+            "",
+            "Use these unique artifacts as supplemental hints, not as final answers.",
+            "",
+            "## Summary",
+            f"- Trace A role: `{comparison.get('trace_a_role') or 'unknown'}`",
+            f"- Trace B role: `{comparison.get('trace_b_role') or 'unknown'}`",
+            f"- Comparison: `{comparison.get('comparison_type') or 'unknown'}`",
+            f"- Unique functions in JSON: `{len(source_function_records)}`",
+            f"- Unique functions shown here: `{len(function_records)}`",
         ]
 
-        for module_name, symbol_id in module_symbols.items():
-            lines.append("SYM " + _compact_json_text({
-                "id": symbol_id,
-                "k": "mod",
-                "v": module_name,
-            }))
+        if target_package:
+            lines.append(f"- Target package filter: `{target_package}`")
 
-        for file_path, symbol_id in file_symbols.items():
-            meta = file_meta.get(file_path, {})
-            lines.append("SYM " + _compact_json_text(_drop_empty_fields({
-                "id": symbol_id,
-                "k": "file",
-                "p": file_path,
-                "rp": meta.get("rp"),
-                "bn": meta.get("bn"),
-            })))
+        if not function_records:
+            lines.extend([
+                "",
+                "## Artifact Candidates",
+                "- No unique functions matched the current target-package filter.",
+            ])
+            return "\n".join(lines)
 
-        for class_name, symbol_id in class_symbols.items():
-            lines.append("SYM " + _compact_json_text({
-                "id": symbol_id,
-                "k": "class",
-                "v": class_name,
-            }))
-
-        for scope_name, symbol_id in scope_symbols.items():
-            lines.append("SYM " + _compact_json_text({
-                "id": symbol_id,
-                "k": "scope",
-                "v": scope_name,
-            }))
-
+        file_counts = {}
         for record in function_records:
-            lines.append("FUN " + _compact_json_text(_drop_empty_fields({
-                "n": record.get("name"),
-                "q": record.get("qualified_name"),
-                "mid": module_symbols.get(record.get("module_name")),
-                "fid": file_symbols.get(record.get("path")),
-                "cid": class_symbols.get(record.get("class_name")),
-                "sid": scope_symbols.get(record.get("parent_scope")),
-                "def": record.get("defined_line_number"),
-                "end": record.get("end_line_number"),
-                "type": record.get("definition_type"),
-                "async": compact_bool(record.get("is_async")),
-                "src": compact_bool(record.get("definition_found_in_source")),
-                "first": record.get("first_seen_line_number"),
-                "obs": record.get("observed_line_numbers", []),
-                "ev": record.get("event_count_in_trace_a"),
-                "call": record.get("call_count_in_trace_a"),
-                "line": record.get("line_event_count_in_trace_a"),
-                "ret": record.get("return_count_in_trace_a"),
-                "exc": record.get("exception_count_in_trace_a"),
-                "dep": record.get("max_call_depth"),
-                "smp": compact_samples(record.get("sample_executed_lines", [])),
-            })))
+            relative_path = _package_relative_path(
+                record.get("path"),
+                target_package=target_package,
+                module_name=record.get("module_name"),
+                file_name=record.get("file_name"),
+            )
+            file_counts[relative_path] = file_counts.get(relative_path, 0) + 1
+
+        lines.extend([
+            "",
+            "## Related Files",
+        ])
+        for file_path, count in sorted(file_counts.items(), key=lambda item: (-item[1], item[0]))[:12]:
+            lines.append(f"- `{file_path}`: `{count}` unique function(s)")
+
+        lines.extend([
+            "",
+            "## Artifact Candidates",
+        ])
+
+        displayed_records = function_records[:20]
+        for record in displayed_records:
+            relative_path = _package_relative_path(
+                record.get("path"),
+                target_package=target_package,
+                module_name=record.get("module_name"),
+                file_name=record.get("file_name"),
+            )
+            qualified_name = record.get("qualified_name") or record.get("name") or "(unknown function)"
+            lines.append(f"- artifact: `{relative_path}:{qualified_name}`")
+            if record.get("module_name"):
+                lines.append(f"  - module: `{record.get('module_name')}`")
+
+            definition_span = _format_line_span(
+                record.get("defined_line_number"),
+                record.get("end_line_number"),
+            )
+            if definition_span:
+                lines.append(f"  - definition: `{definition_span}`")
+
+            first_seen_line = record.get("first_seen_line_number")
+            if first_seen_line is not None:
+                lines.append(f"  - first observed in trace A: `line {first_seen_line}`")
+
+            observed_lines = _format_line_list(record.get("observed_line_numbers"), limit=8)
+            if observed_lines:
+                lines.append(f"  - observed lines: `{observed_lines}`")
+
+            activity_summary = (
+                f"{record.get('event_count_in_trace_a') or 0} events, "
+                f"{record.get('call_count_in_trace_a') or 0} calls, "
+                f"{record.get('line_event_count_in_trace_a') or 0} line events, "
+                f"{record.get('return_count_in_trace_a') or 0} returns, "
+                f"{record.get('exception_count_in_trace_a') or 0} exceptions, "
+                f"max depth {record.get('max_call_depth') or 0}"
+            )
+            lines.append(f"  - trace activity: {activity_summary}")
+
+            sample_lines = record.get("sample_executed_lines", [])[:3]
+            if sample_lines:
+                lines.append("  - sample executed lines:")
+                for sample in sample_lines:
+                    sample_line_no = sample.get("line_number")
+                    sample_content = _shorten_markdown_text(sample.get("line_content"), max_length=100)
+                    if sample_line_no is None:
+                        lines.append(f"    - `{sample_content}`")
+                    else:
+                        lines.append(f"    - `line {sample_line_no}`: `{sample_content}`")
+
+        omitted_count = len(function_records) - len(displayed_records)
+        if omitted_count > 0:
+            lines.append(f"- Additional artifact candidates omitted: `{omitted_count}`")
 
         return "\n".join(lines)
 
@@ -1778,7 +1906,13 @@ def filter_dep_tree_by_unique_artifacts(unique_artifacts, dep_tree, output_folde
     if generate_llm_txt:
         edgelist_output_file = os.path.join(output_dir, "unique_dep_tree_edgelist.txt")
         with open(edgelist_output_file, "w", encoding="utf-8") as handle:
-            handle.write(_dep_tree_to_edgelist_text(filtered_dep_tree, target_package=target_package))
+            handle.write(
+                _dep_tree_to_edgelist_text(
+                    filtered_dep_tree,
+                    target_package=target_package,
+                    anchor_records=artifacts_json.get("unique_functions", []),
+                )
+            )
 
     print(
         "\n\nSuccess! "
