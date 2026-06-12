@@ -23,7 +23,8 @@ DEPENDENCY_GRAPH_COMMENT = {
             "Category of symbol. Possible values: `var` = ordinary assigned variable; `param` = function parameter; "
             "`func` = function definition symbol; `class` = class definition symbol; `attr` = attribute-like symbol such as "
             "`obj.attr` or an unresolved chained-call name; `subscript` = subscript write target such as `items[]`; "
-            "`ref` = external or unresolved reference with no resolved local definition site."
+            "`ref` = unresolved reference with no resolved local definition site; "
+            "`external` = project-external call placeholder."
         ),
         "symbols.name": (
             "Raw symbol name captured from tracing and AST dependency analysis. "
@@ -824,6 +825,14 @@ class DependencyTree:
         next_frame_id = 1
         next_step_seq = 1
 
+        def ensure_file_id(file_path):
+            if not file_path:
+                return ""
+            if file_path not in file_ids:
+                file_ids[file_path] = f"f{len(file_ids) + 1}"
+                graph["files"][file_ids[file_path]] = file_path
+            return file_ids[file_path]
+
         def uniq(values):
             seen = set()
             ordered = []
@@ -1205,6 +1214,87 @@ class DependencyTree:
 
             return {"frame_id": frame_id, "return_sources": frame_state["return_sources"]}
 
+        def process_external_call_event(external_event, parent_frame_state, callsite=None):
+            details = external_event.get("details", {})
+            if callsite is None:
+                return
+
+            line_no = callsite["line_no"]
+            external_file = details.get("file_path") or f"external:{details.get('package', '(unknown-package)')}"
+            external_file_id = ensure_file_id(external_file)
+            if not external_file_id:
+                return
+
+            external_symbol_name = details.get("external_symbol") or f"external:{details.get('external_name', '(unknown)')}"
+            external_symbol = ensure_symbol(
+                "external",
+                external_symbol_name,
+                "<external>",
+                external_file_id,
+                0,
+            )
+
+            callable_source_ids = resolve_many(
+                callsite.get("callable_dependencies"),
+                callsite["scope"],
+                callsite["file_path"],
+                callsite["file_id"],
+                line_no,
+            )
+            arg_source_ids = []
+            for dependency_group in callsite.get("arg_dependency_groups", []):
+                arg_source_ids.extend(
+                    resolve_many(
+                        dependency_group,
+                        callsite["scope"],
+                        callsite["file_path"],
+                        callsite["file_id"],
+                        line_no,
+                    )
+                )
+            arg_source_ids = uniq(arg_source_ids)
+
+            for source_id in callable_source_ids:
+                add_edge(source_id, external_symbol, line_no, kind="call")
+            for source_id in arg_source_ids:
+                add_edge(source_id, external_symbol, line_no, kind="arg")
+
+            add_step(
+                parent_frame_state.get("frame_id", ""),
+                "call",
+                line_no,
+                uniq(callable_source_ids + arg_source_ids),
+                [external_symbol],
+                {
+                    "external": True,
+                    "func": details.get("external_name"),
+                    "symbol": external_symbol_name,
+                },
+            )
+
+            if callsite["result_kind"] == "return":
+                parent_frame_state["return_sources"].add(external_symbol)
+                return
+
+            target_ids = list(callsite["target_ids"].values())
+            if not target_ids:
+                return
+
+            for target_id in target_ids:
+                add_edge(external_symbol, target_id, line_no, kind="ret")
+            add_step(
+                parent_frame_state.get("frame_id", ""),
+                "bind",
+                line_no,
+                [external_symbol],
+                target_ids,
+                {
+                    "external": True,
+                    "func": details.get("external_name"),
+                    "stmt": callsite["result_kind"],
+                },
+            )
+
         def process_event_list(events, frame_state):
             pending = None
             for item in events:
@@ -1222,6 +1312,14 @@ class DependencyTree:
                         flush_pending_line(pending, frame_state)
                         pending = None
                     process_call_event(item, frame_state, callsite=callsite)
+                    continue
+
+                if event_type == "EXTERNAL_CALL":
+                    callsite = match_callsite(pending, details.get("func"))
+                    if callsite is None:
+                        flush_pending_line(pending, frame_state)
+                        pending = None
+                    process_external_call_event(item, frame_state, callsite=callsite)
                     continue
 
                 if event_type == "EXCEPTION":

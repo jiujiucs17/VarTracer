@@ -1,13 +1,80 @@
 import json
 import os
+import sys
 import tempfile
+import textwrap
 import unittest
 
+from VarTracer.VarTracer_Core import VarTracer
 from VarTracer.test_code._trace_test_support import TraceTestMixin
 
 
 class TestExecutionTrace(TraceTestMixin, unittest.TestCase):
     """Coverage for execution-stack generation and export behavior."""
+
+    def trace_project_calling_external_module(self, package_name, only_project_root):
+        with tempfile.TemporaryDirectory() as project_dir, tempfile.TemporaryDirectory() as external_dir:
+            package_dir = os.path.join(external_dir, package_name)
+            os.makedirs(package_dir, exist_ok=True)
+            helper_path = os.path.join(package_dir, "helper.py")
+            script_path = os.path.join(project_dir, "sample_script.py")
+
+            with open(os.path.join(package_dir, "__init__.py"), "w", encoding="utf-8") as handle:
+                handle.write("")
+            with open(helper_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    textwrap.dedent(
+                        """
+                        def outside_func(value):
+                            hidden = value + 10
+                            return hidden
+                        """
+                    ).lstrip()
+                )
+            with open(script_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    textwrap.dedent(
+                        f"""
+                        from {package_name}.helper import outside_func
+
+                        seed = 5
+                        result = outside_func(seed)
+                        """
+                    ).lstrip()
+                )
+
+            with open(script_path, "r", encoding="utf-8") as handle:
+                compiled = compile(handle.read(), script_path, "exec")
+
+            vt = VarTracer(
+                clean_stdlib=True,
+                only_project_root=project_dir if only_project_root else None,
+                verbose=False,
+            )
+            namespace = {"__name__": "__main__", "__file__": script_path}
+            old_sys_path = list(sys.path)
+            sys.path.insert(0, external_dir)
+            for module_name in list(sys.modules):
+                if module_name == package_name or module_name.startswith(package_name + "."):
+                    del sys.modules[module_name]
+            try:
+                vt.start()
+                exec(compiled, namespace)
+            finally:
+                vt.stop()
+                sys.path[:] = old_sys_path
+                for module_name in list(sys.modules):
+                    if module_name == package_name or module_name.startswith(package_name + "."):
+                        del sys.modules[module_name]
+
+            exec_stack = vt.exec_stack_json(show_progress=False)
+            dep_tree = vt.dep_tree_json(show_progress=False)
+            return {
+                "exec_stack": exec_stack,
+                "dep_tree": dep_tree,
+                "helper_path": helper_path,
+                "script_path": script_path,
+            }
 
     def test_exec_stack_contains_script_module_line_and_return_events(self):
         """A simple module should trace as CALL -> LINE(s) -> RETURN in the execution stack."""
@@ -100,6 +167,77 @@ class TestExecutionTrace(TraceTestMixin, unittest.TestCase):
 
         self.assertEqual(stdlib_events, [])
 
+    def test_default_tracing_still_expands_project_external_python_modules(self):
+        """Without only_project_root, non-stdlib modules outside the script directory keep current behavior."""
+        result = self.trace_project_calling_external_module(
+            "default_external_pkg",
+            only_project_root=False,
+        )
+
+        root_call = self.find_script_root_call(result["exec_stack"], result["script_path"])
+        nested_events = self.flatten_events(root_call["details"]["daughter_stack"])
+
+        self.assertFalse(any(event.get("type") == "EXTERNAL_CALL" for event in nested_events))
+        self.assertTrue(
+            any(
+                event.get("details", {}).get("file_path") == result["helper_path"]
+                and event.get("details", {}).get("line_content") == "hidden = value + 10"
+                for event in nested_events
+            )
+        )
+
+    def test_only_project_root_collapses_external_python_modules_to_placeholder(self):
+        """Project-root tracing should keep boundary calls without expanding external code internals."""
+        result = self.trace_project_calling_external_module(
+            "placeholder_external_pkg",
+            only_project_root=True,
+        )
+
+        root_call = self.find_script_root_call(result["exec_stack"], result["script_path"])
+        nested_events = self.flatten_events(root_call["details"]["daughter_stack"])
+        external_events = [
+            event for event in nested_events
+            if event.get("type") == "EXTERNAL_CALL"
+        ]
+
+        self.assertTrue(external_events)
+        self.assertIn(
+            "external:placeholder_external_pkg.helper.outside_func",
+            {event.get("details", {}).get("external_symbol") for event in external_events},
+        )
+        self.assertFalse(
+            any(
+                event.get("details", {}).get("file_path") == result["helper_path"]
+                or event.get("details", {}).get("line_content") == "hidden = value + 10"
+                for event in nested_events
+            )
+        )
+
+        dep_tree = result["dep_tree"]
+        external_symbol_ids = {
+            symbol_id
+            for symbol_id, symbol in dep_tree["symbols"].items()
+            if symbol[0] == "external"
+            and symbol[1] == "external:placeholder_external_pkg.helper.outside_func"
+        }
+        result_symbol_ids = {
+            symbol_id
+            for symbol_id, symbol in dep_tree["symbols"].items()
+            if symbol[1] == "result"
+        }
+
+        self.assertTrue(external_symbol_ids)
+        self.assertNotIn(result["helper_path"], set(dep_tree["files"].values()))
+        self.assertIn("external:placeholder_external_pkg", set(dep_tree["files"].values()))
+        self.assertTrue(
+            any(
+                edge[0] in external_symbol_ids
+                and edge[1] in result_symbol_ids
+                and edge[2] == "ret"
+                for edge in dep_tree["edges"]
+            )
+        )
+
     def test_raw_result_contains_script_call_line_and_return_markers(self):
         """The raw trace export should contain the expected textual event markers."""
         result = self.trace_source(
@@ -177,8 +315,8 @@ class TestExecutionTrace(TraceTestMixin, unittest.TestCase):
         self.assertIn("symbols", written)
         self.assertIn("edges", written)
 
-    def test_dep_tree_edgelist_writes_compact_text_output(self):
-        """The edge-list exporter should render complete compact records for LLM use."""
+    def test_dep_tree_edgelist_writes_compact_dependency_hints(self):
+        """The dependency-tree text exporter should write the compact LLM hint format."""
         result = self.trace_source(
             """
             a = 1
@@ -195,11 +333,16 @@ class TestExecutionTrace(TraceTestMixin, unittest.TestCase):
                 written = handle.read()
 
         self.assertEqual(output, written)
-        self.assertIn("META ", written)
-        self.assertIn('FIL {"id":"f1"', written)
-        self.assertIn('SYM {"id":"s1"', written)
-        self.assertIn('EDG {"src":"s1","dst":"s2","k":"data","l":2,"h":1}', written)
-        self.assertIn('PTH {"sink":"s2","seq":["s1","s2"]}', written)
+        self.assertIn("# Unique Dependency Hints", written)
+        self.assertIn("Use these dependency hints as supplemental evidence, not as final answers.", written)
+        self.assertIn("- Retained files: `1`", written)
+        self.assertIn("- Retained symbols: `2`", written)
+        self.assertIn("- Retained edges: `1`", written)
+        self.assertIn("- Matched dependency paths: `1`", written)
+        self.assertIn("## Related File Clusters", written)
+        self.assertIn("`sample_script.py`: appears in `1` retained dependency path(s)", written)
+        self.assertIn("## Key Dependency Paths", written)
+        self.assertIn("- path: `sample_script.py`", written)
 
     def test_flow_trace_contains_comment_frames_and_flow_steps(self):
         """The flow trace should expose compact runtime flow with documented step semantics."""

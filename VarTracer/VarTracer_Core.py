@@ -32,6 +32,9 @@ from .Utilities import _dep_tree_to_edgelist_text
 class VarTracer:
     def __init__(self, only_project_root=None, clean_stdlib=True, ignore_module_func=False, verbose=False):
         
+        if only_project_root:
+            clean_stdlib = False  # 如果指定了 only_project_root，则不清理标准库模块，因为需要对标准库模块生成placeholder节点以保持调用关系的完整性。
+
         # Initialize the VTracer instance
         self.raw_logs = []
         self.exec_stack = None # save processed execution stack in json format
@@ -94,6 +97,41 @@ class VarTracer:
 
         collect_modules(stdlib_path)
         return self._expand_module_names(stdlib_modules)
+
+    def _is_in_project_root(self, filename):
+        if not self.only_project_root:
+            return True
+        try:
+            return os.path.commonpath([self.only_project_root, filename]) == self.only_project_root
+        except ValueError:
+            return False
+
+    def _external_call_info(self, frame, module_name, root_module, func_name):
+        package_name = root_module or module_name or "(unknown-package)"
+        module_label = module_name or package_name
+        class_name = None
+
+        self_obj = frame.f_locals.get("self")
+        if self_obj is not None:
+            class_name = type(self_obj).__qualname__
+        else:
+            cls_obj = frame.f_locals.get("cls")
+            if isinstance(cls_obj, type):
+                class_name = cls_obj.__qualname__
+
+        if func_name == "<module>":
+            external_name = module_label
+        elif class_name:
+            external_name = f"{module_label}.{class_name}.{func_name}"
+        else:
+            external_name = f"{module_label}.{func_name}"
+
+        return {
+            "package": package_name,
+            "external_name": external_name,
+            "external_symbol": f"external:{external_name}",
+            "external_file": f"external:{package_name}",
+        }
     
     def _trace(self, frame, event, arg):
         filename = os.path.abspath(frame.f_code.co_filename)
@@ -111,6 +149,16 @@ class VarTracer:
         func_name = frame.f_code.co_name
         if func_name in self.ignored_funcs:
             # print("Ignoring function:", func_name)
+            return None
+
+        if not self._is_in_project_root(filename):
+            if event == "call":
+                self.raw_logs.append({
+                    'frame': FrameSnapshot(frame, capture_scope_names=False),
+                    'event': 'external_call',
+                    'arg': None,
+                    'external_info': self._external_call_info(frame, module_name, root_module, func_name),
+                })
             return None
 
         # 保存原始事件
@@ -347,6 +395,19 @@ class VarTracer:
                     call_event = create_event("CALL", base_info)
                     call_event["details"]["daughter_stack"] = process_scope(logs, depth=depth+1, pbar=pbar)
                     stack.append(call_event)
+                elif event == 'external_call':
+                    external_info = record.get("external_info", {})
+                    external_event = create_event(
+                        "EXTERNAL_CALL",
+                        {
+                            **base_info,
+                            "file_path": safe_serialize(external_info.get("external_file", "external:(unknown-package)")),
+                            "package": safe_serialize(external_info.get("package", "(unknown-package)")),
+                            "external_name": safe_serialize(external_info.get("external_name", base_info["module"])),
+                            "external_symbol": safe_serialize(external_info.get("external_symbol", "external:(unknown)")),
+                        },
+                    )
+                    stack.append(external_event)
                 elif event == 'return':
                     return_event = create_event("RETURN", base_info)
                     stack.append(return_event)
