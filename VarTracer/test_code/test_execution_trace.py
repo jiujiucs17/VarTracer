@@ -228,7 +228,12 @@ class TestExecutionTrace(TraceTestMixin, unittest.TestCase):
 
         self.assertTrue(external_symbol_ids)
         self.assertNotIn(result["helper_path"], set(dep_tree["files"].values()))
-        self.assertIn("external:placeholder_external_pkg", set(dep_tree["files"].values()))
+        external_files = {
+            file_path
+            for file_path in dep_tree["files"].values()
+            if str(file_path).startswith("external:")
+        }
+        self.assertEqual(external_files, {"external:placeholder_external_pkg"})
         self.assertTrue(
             any(
                 edge[0] in external_symbol_ids

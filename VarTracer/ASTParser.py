@@ -589,7 +589,8 @@ class DependencyTree:
             files = set()
             details = call_stack_item.get("details", {})
 
-            files.add(details.get("file_path", None))
+            if call_stack_item.get("type") != "EXTERNAL_CALL":
+                files.add(details.get("file_path", None))
             daughter_stack = details.get("daughter_stack", None)
             if daughter_stack:
                 for item in daughter_stack:

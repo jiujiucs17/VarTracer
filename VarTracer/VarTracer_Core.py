@@ -32,8 +32,8 @@ from .Utilities import _dep_tree_to_edgelist_text
 class VarTracer:
     def __init__(self, only_project_root=None, clean_stdlib=True, ignore_module_func=False, verbose=False):
         
-        if only_project_root:
-            clean_stdlib = False  # 如果指定了 only_project_root，则不清理标准库模块，因为需要对标准库模块生成placeholder节点以保持调用关系的完整性。
+        # if only_project_root:
+        #     clean_stdlib = False  # 如果指定了 only_project_root，则不清理标准库模块，因为需要对标准库模块生成placeholder节点以保持调用关系的完整性。
 
         # Initialize the VTracer instance
         self.raw_logs = []
