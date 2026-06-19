@@ -161,12 +161,16 @@ class VarTracer:
                 })
             return None
 
-        # 保存原始事件
-        self.raw_logs.append({
+        # 保存原始事件。代码对象的首行号只需由 CALL 事件携带，避免在每个
+        # LINE/RETURN/EXCEPTION 事件中重复存储。
+        trace_record = {
             'frame': FrameSnapshot(frame, capture_scope_names=(event == 'line')),
             'event': event,
             'arg': arg
-        })
+        }
+        if event == 'call':
+            trace_record['code_firstlineno'] = frame.f_code.co_firstlineno
+        self.raw_logs.append(trace_record)
 
         return self._trace
     
@@ -392,7 +396,13 @@ class VarTracer:
                 }
 
                 if event == 'call':
-                    call_event = create_event("CALL", base_info)
+                    call_event = create_event(
+                        "CALL",
+                        {
+                            **base_info,
+                            "code_firstlineno": record["code_firstlineno"],
+                        },
+                    )
                     call_event["details"]["daughter_stack"] = process_scope(logs, depth=depth+1, pbar=pbar)
                     stack.append(call_event)
                 elif event == 'external_call':
@@ -471,7 +481,7 @@ class VarTracer:
             os.makedirs(output_path, exist_ok=True)
             output_file = os.path.join(output_path, output_name)
             with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(output_data, f, indent=4)
+                json.dump(output_data, f, separators=(",", ":"))
             if self.verbose:
                 print(f"Nested JSON call stack saved to '{output_file}'")
 

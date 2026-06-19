@@ -127,6 +127,43 @@ class TestExecutionTrace(TraceTestMixin, unittest.TestCase):
         self.assertEqual(add_stack[-1]["type"], "RETURN")
         self.assertEqual(add_stack[-1]["details"]["depth"], 2)
 
+    def test_code_firstlineno_only_appears_on_call_events(self):
+        """CALL events should identify their code object without duplicating the field elsewhere."""
+        result = self.trace_source(
+            """
+            class Left:
+                def __mul__(self, other):
+                    return other
+
+            class Right:
+                def __mul__(self, other):
+                    return other
+
+            left = Left() * 1
+            right = Right() * 2
+            """
+        )
+
+        root_call = self.find_script_root_call(result["exec_stack"], result["script_path"])
+        events = self.flatten_events([root_call])
+        mul_calls = [
+            event
+            for event in events
+            if event["type"] == "CALL" and event["details"]["func"] == "__mul__"
+        ]
+
+        self.assertEqual(len(mul_calls), 2)
+        self.assertEqual(
+            {event["details"]["code_firstlineno"] for event in mul_calls},
+            {2, 6},
+        )
+        self.assertTrue(
+            all("code_firstlineno" in event["details"] for event in events if event["type"] == "CALL")
+        )
+        self.assertTrue(
+            all("code_firstlineno" not in event["details"] for event in events if event["type"] != "CALL")
+        )
+
     def test_exec_stack_records_exception_event_details(self):
         """Raised exceptions should be serialized into EXCEPTION events with type and value."""
         result = self.trace_source(
@@ -270,9 +307,11 @@ class TestExecutionTrace(TraceTestMixin, unittest.TestCase):
 
             self.assertTrue(os.path.exists(output_file))
             with open(output_file, "r", encoding="utf-8") as handle:
-                written = json.load(handle)
+                written_text = handle.read()
+                written = json.loads(written_text)
 
         self.assertEqual(output, written)
+        self.assertEqual(written_text, json.dumps(output, separators=(",", ":")))
         self.assertIn("execution_stack", written)
 
     def test_exec_stack_txt_writes_human_readable_output(self):
